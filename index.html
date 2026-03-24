@@ -1,0 +1,1054 @@
+<!-- Equipment Checkout v1.0 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PennCard Equipment Checkout</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <div class="h-left">
+    <span class="h-unit">PennCard Center</span>
+    <span class="h-app">Equipment Checkout</span>
+    <span class="h-unit" style="border-right:none;padding-right:0;padding-left:0;">v1.0</span>
+  </div>
+  <span class="h-date" id="hDate"></span>
+</header>
+
+<div class="shell">
+
+  <!-- ── Sidebar ── -->
+  <aside>
+    <div id="sidebar"></div>
+    <div class="sb-backup">
+      <div class="sb-backup-hd">Data Backup</div>
+      <div class="bb-last" id="sbLastBackup"></div>
+      <div class="sb-backup-btns">
+        <button class="btn-backup" onclick="exportJSON()">↓ Export backup (.json)</button>
+        <button class="btn-backup restore" onclick="document.getElementById('importFile').click()">↑ Restore from backup…</button>
+        <input type="file" id="importFile" accept=".json" onchange="importJSON(this)">
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <main>
+    <div id="backupBanner"></div>
+    <div id="storageBanner"></div>
+    <div class="tabs">
+      <button class="tab on" onclick="tab('dashboard',this)">Dashboard</button>
+      <button class="tab"    onclick="tab('history',this)">Checkout History</button>
+    </div>
+
+    <!-- Dashboard -->
+    <div class="pane on" id="pane-dashboard">
+      <div class="stats" id="statsRow"></div>
+      <div id="ovBanner"></div>
+      <div id="actionBar"></div>
+      <div class="filter-row" id="filterRow">
+        <button class="fil on" onclick="setFil('all',this)">All</button>
+        <button class="fil"    onclick="setFil('reader',this)">Readers</button>
+        <button class="fil"    onclick="setFil('hotspot',this)">Hotspots</button>
+        <button class="fil"    onclick="setFil('charger',this)">Charger Sets</button>
+      </div>
+      <div class="sec">Available</div>
+      <div class="grid" id="gridAvail"></div>
+      <div id="checkedOutSection"></div>
+    </div>
+
+    <!-- History -->
+    <div class="pane" id="pane-history">
+      <div class="export-bar">
+        <span class="export-lbl">Export</span>
+        <div class="export-btns">
+          <button class="btn btn-ghost btn-sm" onclick="exportHistoryCSV()">↓ Rental History (.csv)</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportInventoryCSV()">↓ Inventory Snapshot (.csv)</button>
+        </div>
+      </div>
+      <div class="hist-wrap">
+        <div class="hist-top">
+          <input class="hsearch" id="hsearch" type="text" placeholder="Search event, org, or item…" oninput="renderHistory()">
+          <span class="hist-count" id="histCount"></span>
+        </div>
+        <div id="histBody"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ── Checkout Modal ── -->
+<div class="overlay" id="oCO">
+  <div class="modal">
+    <div class="modal-title">Check Out Equipment</div>
+    <div class="modal-sub" id="coSub">Complete the details below</div>
+    <div class="co-items" id="coItemList"></div>
+    <div class="fgrp">
+      <label class="flbl" for="fEvent">Event Name *</label>
+      <input class="finput" id="fEvent" type="text" placeholder="e.g., NSO Welcome Week">
+      <div class="ferr" id="eEvent">Event name is required.</div>
+    </div>
+    <div class="fgrp">
+      <label class="flbl" for="fOrg">Organization / Department *</label>
+      <input class="finput" id="fOrg" type="text" placeholder="e.g., Student Activities">
+      <div class="ferr" id="eOrg">Organization is required.</div>
+    </div>
+    <div class="frow">
+      <div class="fgrp">
+        <label class="flbl" for="fCoDate">Checkout Date *</label>
+        <input class="finput" id="fCoDate" type="date">
+        <div class="ferr" id="eCo">Required.</div>
+      </div>
+      <div class="fgrp">
+        <label class="flbl" for="fRetDate">Expected Return *</label>
+        <input class="finput" id="fRetDate" type="date">
+        <div class="ferr" id="eRet">Return date required.</div>
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('oCO')">Cancel</button>
+      <button class="btn btn-blue" onclick="confirmCheckout()">✓ Check Out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Check-In Modal ── -->
+<div class="overlay" id="oCI">
+  <div class="modal">
+    <div class="modal-title">Return Equipment</div>
+    <div class="modal-sub" id="ciSub"></div>
+    <div class="ci-box" id="ciBox"></div>
+    <div class="fgrp">
+      <label class="flbl" for="fActual">Actual Return Date *</label>
+      <input class="finput" id="fActual" type="date">
+      <div class="ferr" id="eActual">Return date required.</div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('oCI')">Cancel</button>
+      <button class="btn btn-ok" onclick="confirmCheckin()">✓ Confirm Return</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Confirm Dialog ── -->
+<div class="overlay" id="oCFM">
+  <div class="modal cdlg">
+    <div class="modal-title" id="cfmTitle"></div>
+    <div class="modal-sub" style="margin-bottom:14px"></div>
+    <div class="cdlg-body" id="cfmBody"></div>
+    <div class="cdlg-btns">
+      <button class="btn btn-ghost" onclick="closeModal('oCFM')">Cancel</button>
+      <button class="btn btn-danger" id="cfmOk">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  Equipment Checkout v1.0
+//  CONSTANTS & STATE
+// ═══════════════════════════════════════════════════════
+
+const STORE = 'pennco-v3';
+const STORE_SHADOW = 'pennco-v3-shadow';
+const STORE_META   = 'pennco-v3-meta';
+const BACKUP_INTERVAL_DAYS = 7;
+
+const TYPE = {
+  reader:  { label:'Reader',         plural:'Readers',        icon:'🪪', pfx:'RDR' },
+  hotspot: { label:'Mobile Hotspot', plural:'Mobile Hotspots',icon:'📶', pfx:'HSP' },
+  charger: { label:'Charger Set',    plural:'Charger Sets',   icon:'🔌', pfx:'CHG' },
+};
+
+// State:
+//  equipment: [{id, type, number, status:'avail'|'out', current:null|{rentalId,...}, history:[]}]
+//  rentals:   [{id, items:[itemId,...], event, org, coDate, retDate, actualDate|null, closed}]
+//  seq:       {reader:N, hotspot:N, charger:N}
+
+let S = load();
+let byId = new Map();
+function rebuildIndex() { byId = new Map(S.equipment.map(e => [e.id, e])); }
+rebuildIndex();
+let selected = new Set();   // item ids selected for batch checkout
+let ciItemId = null;        // item being checked in
+let ciRentalId = null;
+let activeFilter = 'all';
+let ciMode = 'single';      // 'single' or 'batch' for check-in modal
+let ciBatchItems = [];       // items being returned in batch mode
+let _pruning = false;        // recursion guard for storage health checks
+
+// ═══════════════════════════════════════════════════════
+//  PERSISTENCE
+// ═══════════════════════════════════════════════════════
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE);
+    if (raw) return JSON.parse(raw);
+  } catch(e) {}
+  return { equipment:[], rentals:[], seq:{reader:1,hotspot:1,charger:1} };
+}
+
+function save() {
+  rebuildIndex();
+  const serialized = JSON.stringify(S);
+  try {
+    localStorage.setItem(STORE, serialized);
+    localStorage.setItem(STORE_SHADOW, serialized);
+  } catch (e) {
+    // QuotaExceededError — force prune and retry
+    pruneOldData(2);
+    const pruned = JSON.stringify(S);
+    try {
+      localStorage.setItem(STORE, pruned);
+      localStorage.setItem(STORE_SHADOW, pruned);
+    } catch (e2) {
+      toast('Storage is full. Please export a backup and clear old data.', 'err');
+    }
+  }
+  if (!_pruning) checkStorageHealth();
+}
+
+function loadMeta() {
+  try { return JSON.parse(localStorage.getItem(STORE_META)) || {}; } catch(e) { return {}; }
+}
+
+function saveMeta(patch) {
+  const m = { ...loadMeta(), ...patch };
+  localStorage.setItem(STORE_META, JSON.stringify(m));
+}
+
+// ═══════════════════════════════════════════════════════
+//  UTILITIES
+// ═══════════════════════════════════════════════════════
+
+function uid() { return crypto.randomUUID(); }
+
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function fmtDate(s) {
+  if (!s) return '—';
+  const [y,m,d] = s.split('-');
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[+m-1]} ${+d}, ${y}`;
+}
+
+function isOverdue(retDate) {
+  if (!retDate) return false;
+  return retDate < today();
+}
+
+function itemLabel(item) {
+  return `${TYPE[item.type].pfx}-${item.number}`;
+}
+
+function statusOf(item) {
+  if (item.status === 'avail') return 'ok';
+  return (item.current && isOverdue(item.current.retDate)) ? 'ov' : 'out';
+}
+
+function statusLabel(st) {
+  return st === 'ok' ? 'Available' : st === 'ov' ? 'Overdue' : 'Checked Out';
+}
+
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function storageUsage() {
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    total += key.length + localStorage.getItem(key).length;
+  }
+  // UTF-16 = 2 bytes per char; 5MB is the common localStorage limit
+  return { used: total * 2, limit: 5 * 1024 * 1024, pct: (total * 2) / (5 * 1024 * 1024) };
+}
+
+function pruneOldData(monthsToKeep) {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - monthsToKeep);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  // Trim item history entries older than cutoff
+  S.equipment.forEach(item => {
+    item.history = item.history.filter(h => h.coDate >= cutoffStr || h.actualDate >= cutoffStr);
+  });
+
+  // Strip snapshots from old closed rentals (keep the record itself for history)
+  S.rentals.forEach(rental => {
+    if (rental.closed && rental.coDate < cutoffStr) {
+      rental.snapshots = null;
+      rental.pruned = true;
+    }
+  });
+}
+
+function checkStorageHealth() {
+  const { pct } = storageUsage();
+  if (pct >= 0.95) {
+    pruneOldData(2);
+    _pruning = true; save(); _pruning = false;
+    renderStorageBanner();
+  } else if (pct >= 0.90) {
+    exportJSON();
+    pruneOldData(6);
+    _pruning = true; save(); _pruning = false;
+    renderStorageBanner();
+  } else if (pct >= 0.80) {
+    renderStorageBanner();
+  } else {
+    clearStorageBanner();
+  }
+}
+
+function renderStorageBanner() {
+  const el = document.getElementById('storageBanner');
+  if (!el) return;
+  const { pct } = storageUsage();
+  if (pct < 0.80) { el.innerHTML = ''; return; }
+  const level = pct >= 0.90 ? 'red' : 'amber';
+  const pctDisplay = Math.round(pct * 100);
+  const msg = pct >= 0.90
+    ? `Storage is <strong>${pctDisplay}% full.</strong> Old data has been pruned automatically.`
+    : `Storage is <strong>${pctDisplay}% full.</strong> Consider exporting a backup.`;
+  el.innerHTML = `<div class="storage-banner ${level}">
+    <div class="bb-left">
+      <span class="bb-icon">${level === 'red' ? '🔴' : '🟡'}</span>
+      <span class="bb-text">${msg}</span>
+    </div>
+    <div class="bb-btns">
+      <button class="btn btn-sm btn-ghost" onclick="exportJSON()">Export Backup</button>
+    </div>
+  </div>`;
+}
+
+function clearStorageBanner() {
+  const el = document.getElementById('storageBanner');
+  if (el) el.innerHTML = '';
+}
+
+function saveNote(id, val) {
+  const item = byId.get(id);
+  if (!item) return;
+  item.note = val.trim();
+  save();
+  // No full render needed — just update sidebar chips tooltip silently
+  renderSidebar();
+}
+
+// ═══════════════════════════════════════════════════════
+//  EQUIPMENT MANAGEMENT
+// ═══════════════════════════════════════════════════════
+
+function addUnit(type) {
+  // Find lowest positive integer not currently in use for this type
+  const used = new Set(S.equipment.filter(e=>e.type===type).map(e=>e.number));
+  let num = 1;
+  while (used.has(num)) num++;
+  S.equipment.push({ id:uid(), type, number:num, note:'', status:'avail', current:null, history:[] });
+  save(); render();
+}
+
+function removeUnit(id) {
+  const item = byId.get(id);
+  if (!item) return;
+  if (item.status === 'out') { toast('Cannot delete — item is currently checked out.','err'); return; }
+  const lbl = itemLabel(item);
+  confirm2(`Delete ${lbl}?`, `This will permanently remove ${lbl} from inventory. This cannot be undone.`, ()=>{
+    S.equipment = S.equipment.filter(e=>e.id!==id);
+    selected.delete(id);
+    save(); render();
+    toast(`${lbl} removed from inventory.`,'ok');
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  SELECTION
+// ═══════════════════════════════════════════════════════
+
+function toggleSelect(id) {
+  const item = byId.get(id);
+  if (!item || item.status !== 'avail') return;
+  if (selected.has(id)) selected.delete(id);
+  else selected.add(id);
+  renderActionBar(); renderGrids();
+}
+
+function clearSelection() { selected.clear(); renderActionBar(); renderGrids(); }
+
+// ═══════════════════════════════════════════════════════
+//  CHECKOUT FLOW
+// ═══════════════════════════════════════════════════════
+
+function openCheckout() {
+  if (selected.size === 0) return;
+  // Populate item list in modal
+  const items = [...selected].map(id => byId.get(id)).filter(Boolean);
+  const listHtml = items.map(it => `
+    <div class="co-item-row">
+      <span class="tag">${itemLabel(it)}</span>
+      <span>${TYPE[it.type].label}</span>
+    </div>`).join('');
+  document.getElementById('coItemList').innerHTML = listHtml;
+  document.getElementById('coSub').textContent = `${items.length} item${items.length>1?'s':''} selected for checkout`;
+  // Pre-fill today
+  document.getElementById('fCoDate').value = today();
+  document.getElementById('fRetDate').value = '';
+  document.getElementById('fEvent').value = '';
+  document.getElementById('fOrg').value = '';
+  clearErrors();
+  openModal('oCO');
+}
+
+function confirmCheckout() {
+  const event   = v('fEvent').trim();
+  const org     = v('fOrg').trim();
+  const coDate  = v('fCoDate');
+  const retDate = v('fRetDate');
+  let ok = true;
+  if (!event)  { showErr('eEvent'); ok=false; }
+  if (!org)    { showErr('eOrg');   ok=false; }
+  if (!coDate) { showErr('eCo');    ok=false; }
+  if (!retDate){ showErr('eRet');   ok=false; }
+  if (retDate && coDate && retDate < coDate) { showErr('eRet',true,'Return date must be after checkout date.'); ok=false; }
+  if (!ok) return;
+
+  const rentalId = uid();
+  const itemIds = [...selected];
+  // Snapshot label and note at moment of checkout — survives device renaming/replacement
+  const snapshots = itemIds.map(id => {
+    const item = byId.get(id);
+    return { id, label: itemLabel(item), note: item.note||'' };
+  });
+  S.rentals.push({ id:rentalId, items:itemIds, snapshots, event, org, coDate, retDate, actualDate:null, closed:false });
+  itemIds.forEach(id => {
+    const item = byId.get(id);
+    item.status = 'out';
+    item.current = { rentalId, event, org, coDate, retDate };
+  });
+  save();
+  selected.clear();
+  closeModal('oCO');
+  render();
+  toast(`${itemIds.length} item${itemIds.length>1?'s':''} checked out for "${event}".`,'ok');
+}
+
+// ═══════════════════════════════════════════════════════
+//  CHECKIN FLOW
+// ═══════════════════════════════════════════════════════
+
+function openCheckin(itemId) {
+  const item = byId.get(itemId);
+  if (!item || !item.current) return;
+  ciMode = 'single';
+  ciItemId = itemId;
+  ciRentalId = item.current.rentalId;
+  const rental = S.rentals.find(r=>r.id===ciRentalId);
+
+  // Show all items in this rental — use snapshots for historical accuracy
+  const sibLines = (rental.snapshots || rental.items.map(id=>{
+    const it = byId.get(id);
+    return it ? { label:itemLabel(it), note:it.note||'' } : { label:id, note:'' };
+  })).map(s=>`<b>${escHtml(s.label)}</b>${s.note ? ' — ' + escHtml(s.note) : ''}`).join('<br>');
+
+  document.getElementById('ciSub').textContent = `Returning item from: ${item.current.event}`;
+  document.getElementById('ciBox').innerHTML = `
+    <div><span class="dl">Event:</span> <span class="dv">${escHtml(rental.event)}</span></div>
+    <div><span class="dl">Org:</span> <span class="dv">${escHtml(rental.org)}</span></div>
+    <div><span class="dl">Out:</span> <span class="dv">${fmtDate(rental.coDate)}</span></div>
+    <div><span class="dl">Due:</span> <span class="dv">${fmtDate(rental.retDate)}</span></div>
+    <div style="margin-top:6px;font-size:11px;color:var(--s400)">Rental includes: ${sibLines}</div>`;
+
+  document.getElementById('fActual').value = today();
+  document.getElementById('eActual').classList.remove('show');
+  openModal('oCI');
+}
+
+function confirmCheckin() {
+  const actual = v('fActual');
+  if (!actual) { showErr('eActual'); return; }
+
+  // Batch return (Return All for event)
+  if (ciMode === 'batch') {
+    let lateCount = 0;
+    ciBatchItems.forEach(item => {
+      const rental = S.rentals.find(r => r.id === item.current.rentalId);
+      if (actual > item.current.retDate) lateCount++;
+      item.history.push({ ...item.current, actualDate: actual });
+      item.status = 'avail';
+      item.current = null;
+      if (rental) {
+        const allReturned = rental.items.every(id => {
+          const it = byId.get(id);
+          return it && it.status === 'avail';
+        });
+        if (allReturned) { rental.closed = true; rental.actualDate = actual; }
+      }
+    });
+    save(); closeModal('oCI'); render();
+    const n = ciBatchItems.length;
+    toast(`${n} item${n > 1 ? 's' : ''} returned${lateCount ? ` (${lateCount} late)` : ''}.`, lateCount ? 'err' : 'ok');
+    ciBatchItems = [];
+    ciMode = 'single';
+    return;
+  }
+
+  // Single item return
+  const item = byId.get(ciItemId);
+  const rental = S.rentals.find(r=>r.id===ciRentalId);
+
+  // Add to item history, clear current
+  item.history.push({ ...item.current, actualDate:actual });
+  item.status = 'avail';
+  item.current = null;
+
+  // If all items in this rental are returned, close it
+  const allReturned = rental.items.every(id => {
+    const it = byId.get(id);
+    return it && it.status === 'avail';
+  });
+  if (allReturned) {
+    rental.closed = true;
+    rental.actualDate = actual;
+  }
+
+  save(); closeModal('oCI'); render();
+  const wasLate = actual > rental.retDate;
+  toast(`${itemLabel(item)} returned${wasLate?' (late)':''}.`, wasLate?'err':'ok');
+}
+
+function returnAllForEvent(eventName) {
+  const outItems = S.equipment.filter(e => e.status === 'out' && e.current && e.current.event === eventName);
+  if (!outItems.length) return;
+
+  ciMode = 'batch';
+  ciBatchItems = outItems;
+
+  // Build combined item list
+  const itemLines = outItems.map(it =>
+    `<b>${escHtml(itemLabel(it))}</b>${it.note ? ' — ' + escHtml(it.note) : ''}`
+  ).join('<br>');
+
+  // Use first item's rental for org display
+  const firstRental = S.rentals.find(r => r.id === outItems[0].current.rentalId);
+  const org = firstRental ? firstRental.org : '';
+
+  document.getElementById('ciSub').textContent = `Returning all items for: ${eventName}`;
+  document.getElementById('ciBox').innerHTML = `
+    <div><span class="dl">Event:</span> <span class="dv">${escHtml(eventName)}</span></div>
+    ${org ? `<div><span class="dl">Org:</span> <span class="dv">${escHtml(org)}</span></div>` : ''}
+    <div style="margin-top:6px;font-size:11px;color:var(--s400)">Items to return (${outItems.length}):<br>${itemLines}</div>`;
+
+  document.getElementById('fActual').value = today();
+  document.getElementById('eActual').classList.remove('show');
+  openModal('oCI');
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════════
+
+function render() {
+  renderHeader();
+  renderSidebar();
+  renderStats();
+  renderOverdue();
+  renderActionBar();
+  renderGrids();
+  renderHistory();
+}
+
+function renderHeader() {
+  const d = new Date();
+  document.getElementById('hDate').textContent =
+    d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+}
+
+function renderSidebar() {
+  const html = Object.entries(TYPE).map(([type, meta]) => {
+    const items = S.equipment.filter(e=>e.type===type);
+    if (items.length === 0) {
+      return `<div class="sb-type">
+        <div class="sb-type-hd">
+          <span class="sb-type-name"><span class="sb-icon">${meta.icon}</span>${meta.plural}</span>
+          <button class="sb-add" onclick="addUnit('${type}')" title="Add ${meta.label}">+</button>
+        </div>
+        <span class="sb-none">No units — add one</span>
+      </div>`;
+    }
+    const chips = items.map(it => {
+      const st = statusOf(it);
+      return `<span class="chip ${st}" title="${statusLabel(st)}">${itemLabel(it)}</span>`;
+    }).join('');
+    return `<div class="sb-type">
+      <div class="sb-type-hd">
+        <span class="sb-type-name"><span class="sb-icon">${meta.icon}</span>${meta.plural}</span>
+        <button class="sb-add" onclick="addUnit('${type}')" title="Add ${meta.label}">+</button>
+      </div>
+      <div class="sb-chips">${chips}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('sidebar').innerHTML =
+    `<div class="sb-sect-hd">Inventory</div>${html}`;
+}
+
+function renderStats() {
+  const eq = S.equipment;
+  const avail = eq.filter(e=>e.status==='avail').length;
+  const out   = eq.filter(e=>e.status==='out').length;
+  const ov    = eq.filter(e=>statusOf(e)==='ov').length;
+  document.getElementById('statsRow').innerHTML = `
+    <div class="stat"><div class="stat-lbl">Total Units</div><div class="stat-n">${eq.length}</div><div class="stat-sub">${Object.keys(TYPE).map(t=>{const c=eq.filter(e=>e.type===t).length;return c?`${c} ${TYPE[t].plural}`:''}).filter(Boolean).join(', ')||'None added'}</div></div>
+    <div class="stat"><div class="stat-lbl">Available</div><div class="stat-n" style="color:var(--ok)">${avail}</div><div class="stat-sub">Ready to check out</div></div>
+    <div class="stat"><div class="stat-lbl">Checked Out</div><div class="stat-n" style="color:var(--warn)">${out}</div><div class="stat-sub">${ov > 0 ? `<span style="color:var(--ov);font-weight:700">${ov} overdue</span>` : 'All on time'}</div></div>
+    <div class="stat"><div class="stat-lbl">Total Rentals</div><div class="stat-n">${S.rentals.length}</div><div class="stat-sub">${S.rentals.filter(r=>r.closed).length} completed</div></div>`;
+}
+
+function renderOverdue() {
+  const items = S.equipment.filter(e=>statusOf(e)==='ov');
+  document.getElementById('ovBanner').innerHTML = items.length
+    ? `<div class="ov-bar">⚠️ <b>${items.length} item${items.length>1?'s':''} overdue:</b> ${items.map(i=>itemLabel(i)).join(', ')}</div>`
+    : '';
+}
+
+function renderActionBar() {
+  const el = document.getElementById('actionBar');
+  if (selected.size === 0) { el.innerHTML=''; return; }
+  const labels = [...selected].map(id=>{
+    const it = byId.get(id);
+    return it ? itemLabel(it) : '';
+  }).filter(Boolean).join(', ');
+  el.innerHTML = `<div class="action-bar">
+    <div class="ab-info">${selected.size} item${selected.size>1?'s':''} selected
+      <span>${labels}</span>
+    </div>
+    <div class="ab-btns">
+      <button class="btn btn-white btn-sm" onclick="clearSelection()">✕ Clear</button>
+      <button class="btn btn-blue btn-sm" style="background:#fff;color:var(--blue)" onclick="openCheckout()">Check Out Selected →</button>
+    </div>
+  </div>`;
+}
+
+function renderGrids() {
+  const fil = activeFilter;
+  let avItems = S.equipment.filter(e=>e.status==='avail' && (fil==='all'||e.type===fil));
+  let outItems = S.equipment.filter(e=>e.status==='out'  && (fil==='all'||e.type===fil));
+
+  // Sort by type then number
+  const sort = arr => arr.sort((a,b)=>a.type.localeCompare(b.type)||a.number-b.number);
+  sort(avItems); sort(outItems);
+
+  document.getElementById('gridAvail').innerHTML = avItems.length
+    ? avItems.map(cardHtml).join('')
+    : '<div class="empty">No available equipment</div>';
+
+  // Group checked-out items by event
+  const coSection = document.getElementById('checkedOutSection');
+  if (!outItems.length) {
+    coSection.innerHTML = `<div class="sec">Checked Out</div>
+      <div class="grid"><div class="empty">Nothing currently checked out</div></div>`;
+    return;
+  }
+
+  const byEvent = new Map();
+  outItems.forEach(item => {
+    const event = item.current ? item.current.event : 'Unknown';
+    if (!byEvent.has(event)) byEvent.set(event, []);
+    byEvent.get(event).push(item);
+  });
+
+  let html = '';
+  for (const [event, items] of byEvent) {
+    // Find the rental ID for this event group (for Return All)
+    const rentalId = items[0].current ? items[0].current.rentalId : null;
+    const hasOverdue = items.some(it => statusOf(it) === 'ov');
+    html += `<div class="event-group">
+      <div class="event-group-hd">
+        <div class="sec" style="margin-bottom:0;flex:1">
+          <span style="display:inline-flex;align-items:center;gap:8px;">
+            Checked Out — ${escHtml(event)}
+            ${hasOverdue ? '<span class="pill ov" style="margin:0;font-size:7.5px;">Overdue</span>' : ''}
+          </span>
+        </div>
+        <button class="btn btn-ci btn-sm" onclick="returnAllForEvent('${escHtml(event).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">Return All →</button>
+      </div>
+      <div class="grid">${items.map(cardHtml).join('')}</div>
+    </div>`;
+  }
+  coSection.innerHTML = html;
+}
+
+function cardHtml(item) {
+  const st = statusOf(item);
+  const lbl = itemLabel(item);
+  const isSel = selected.has(item.id);
+  const canSel = item.status === 'avail';
+  const canDel = item.status === 'avail';
+
+  let details = '';
+  if (item.status === 'out' && item.current) {
+    const cur = item.current;
+    details = `<div class="detail">
+      <div><span class="dl">Event:</span> <span class="dv">${escHtml(cur.event)}</span></div>
+      <div><span class="dl">Org:</span> <span class="dv">${escHtml(cur.org)}</span></div>
+      <div><span class="dl">Out:</span> <span class="dv">${fmtDate(cur.coDate)}</span></div>
+      <div><span class="dl">Due:</span> <span class="dv" ${st==='ov'?'style="color:var(--ov);font-weight:600"':''}>${fmtDate(cur.retDate)}</span></div>
+    </div>`;
+  }
+
+  // Note: editable when available, read-only display when out
+  const noteField = canSel
+    ? `<input class="card-note" type="text" maxlength="80"
+        placeholder="Add device description…"
+        value="${escHtml(item.note||'')}"
+        onblur="saveNote('${item.id}', this.value)"
+        onclick="event.stopPropagation()">`
+    : (item.note ? `<div class="note-snap">${escHtml(item.note)}</div>` : '');
+
+  const action = item.status === 'out'
+    ? `<button class="btn btn-ci" onclick="openCheckin('${item.id}')">Return →</button>`
+    : '';
+
+  const delBtn = canDel
+    ? `<button class="card-del" onclick="removeUnit('${item.id}')" title="Delete unit">✕</button>`
+    : '';
+
+  const cb = canSel
+    ? `<input type="checkbox" class="card-cb" ${isSel?'checked':''} onchange="toggleSelect('${item.id}')">`
+    : '';
+
+  return `<div class="card ${st}${isSel?' selected':''}">
+    ${delBtn}${cb}
+    <div class="card-id">${lbl}</div>
+    <div class="card-type">${TYPE[item.type].label}</div>
+    <div class="pill ${st}">${statusLabel(st)}</div>
+    ${noteField}
+    ${details}
+    <div class="card-action">${action}</div>
+  </div>`;
+}
+
+function renderHistory() {
+  const q = (document.getElementById('hsearch')?.value||'').toLowerCase();
+
+  // Build rows from rentals + item histories
+  const rows = [];
+  S.rentals.forEach(rental => {
+    const items = rental.items.map(id=>byId.get(id)).filter(Boolean);
+    const isOv = !rental.closed && items.some(it=>statusOf(it)==='ov');
+    const status = rental.closed ? 'Returned' : isOv ? 'Overdue' : 'Out';
+    const st2 = rental.closed ? 'ok' : isOv ? 'ov' : 'out';
+    // Use snapshot labels if present; live labels as fallback; pruned rentals use item IDs
+    const snaps = rental.snapshots
+      || (rental.pruned
+        ? rental.items.map(id => { const it = byId.get(id); return it ? { label: itemLabel(it), note: it.note||'' } : { label: id, note: '' }; })
+        : items.map(it=>({ label:itemLabel(it), note:it.note||'' })));
+    const itemLabels = snaps.map(s=>s.label).join(', ');
+    const itemDetail = snaps.map(s=>s.note ? `${s.label} (${s.note})` : s.label).join(', ');
+    rows.push({ rental, items, status, st2, itemLabels, itemDetail, snaps });
+  });
+
+  // Filter
+  const filt = rows.filter(r => {
+    if (!q) return true;
+    return r.rental.event.toLowerCase().includes(q)
+      || r.rental.org.toLowerCase().includes(q)
+      || r.itemLabels.toLowerCase().includes(q);
+  });
+
+  // Most recent first
+  filt.sort((a,b)=>b.rental.coDate.localeCompare(a.rental.coDate));
+
+  document.getElementById('histCount').textContent = `${filt.length} record${filt.length!==1?'s':''}`;
+
+  if (!filt.length) {
+    document.getElementById('histBody').innerHTML = `<div class="hist-none">No records found.</div>`;
+    return;
+  }
+
+  const rows_html = filt.map(r => {
+    const itemCell = r.snaps.map(s =>
+      `<div><span class="mono-s">${escHtml(s.label)}</span>${s.note ? `<span style="font-size:10.5px;color:var(--s400);margin-left:5px;">${escHtml(s.note)}</span>` : ''}</div>`
+    ).join('');
+    return `
+    <tr>
+      <td>${itemCell}</td>
+      <td>${escHtml(r.rental.event)}</td>
+      <td>${escHtml(r.rental.org)}</td>
+      <td><span class="mono-s">${fmtDate(r.rental.coDate)}</span></td>
+      <td><span class="mono-s" ${r.st2==='ov'?'style="color:var(--ov)"':''}>${fmtDate(r.rental.retDate)}</span></td>
+      <td><span class="mono-s">${r.rental.actualDate?fmtDate(r.rental.actualDate):'—'}</span></td>
+      <td><span class="pill ${r.st2}" style="font-size:8px">${r.status}</span></td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('histBody').innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Item(s)</th><th>Event</th><th>Organization</th>
+        <th>Checked Out</th><th>Due</th><th>Returned</th><th>Status</th>
+      </tr></thead>
+      <tbody>${rows_html}</tbody>
+    </table>`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  UI HELPERS
+// ═══════════════════════════════════════════════════════
+
+function tab(id, btn) {
+  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));
+  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));
+  btn.classList.add('on');
+  document.getElementById('pane-'+id).classList.add('on');
+  if (id==='history') renderHistory();
+}
+
+function setFil(type, btn) {
+  activeFilter = type;
+  document.querySelectorAll('.fil').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  renderGrids();
+}
+
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function v(id) { return document.getElementById(id).value; }
+
+function clearErrors() {
+  document.querySelectorAll('.ferr').forEach(e=>{ e.classList.remove('show'); e.textContent=e.dataset.orig||e.textContent; });
+  document.querySelectorAll('.finput').forEach(e=>e.classList.remove('err'));
+}
+
+function showErr(id, useCustom, msg) {
+  const el = document.getElementById(id);
+  el.classList.add('show');
+  if (useCustom && msg) el.textContent = msg;
+  // Highlight the input above it (previous sibling)
+  const inp = el.previousElementSibling;
+  if (inp && inp.classList.contains('finput')) inp.classList.add('err');
+}
+
+function toast(msg, type='ok') {
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.getElementById('toasts').appendChild(t);
+  t.addEventListener('animationend', e => { if (e.animationName === 'tOut') t.remove(); });
+}
+
+function confirm2(title, body, cb) {
+  document.getElementById('cfmTitle').textContent = title;
+  document.getElementById('cfmBody').textContent = body;
+  const btn = document.getElementById('cfmOk');
+  btn.onclick = () => { closeModal('oCFM'); cb(); };
+  openModal('oCFM');
+}
+
+// Close modals on overlay click
+['oCO','oCI','oCFM'].forEach(id=>{
+  document.getElementById(id).addEventListener('click', function(e){
+    if (e.target===this) closeModal(id);
+  });
+});
+
+// Close topmost open modal on Escape key
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    for (const id of ['oCFM','oCI','oCO']) {
+      if (document.getElementById(id).classList.contains('open')) {
+        closeModal(id);
+        break;
+      }
+    }
+  }
+});
+
+// Clear validation errors as user types
+document.querySelectorAll('.finput').forEach(inp=>{
+  inp.addEventListener('input',()=>{
+    inp.classList.remove('err');
+    const next = inp.nextElementSibling;
+    if (next && next.classList.contains('ferr')) next.classList.remove('show');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════
+//  EXPORT / IMPORT
+// ═══════════════════════════════════════════════════════
+
+function csvEscape(val) {
+  const s = String(val ?? '');
+  return (s.includes(',') || s.includes('"') || s.includes('\n'))
+    ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadFile(filename, content, mime) {
+  const a = document.createElement('a');
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  a.href = url;
+  a.download = filename;
+  a.click();
+  // Delay revocation so the browser can consume the blob
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function datestamp() { return today().replace(/-/g, ''); }
+
+function exportHistoryCSV() {
+  if (!S.rentals.length) { toast('No rental history to export.', 'err'); return; }
+  const header = ['Rental ID','Item(s)','Event','Organization','Checkout Date','Expected Return','Actual Return','Status','Late Return'];
+  const rows = S.rentals.map(rental => {
+    const snaps = rental.snapshots || rental.items.map(id => {
+      const it = byId.get(id);
+      return it ? { label: itemLabel(it), note: it.note||'' } : { label: id, note: '' };
+    });
+    const items = snaps.map(s => s.note ? `${s.label} (${s.note})` : s.label);
+    const anyOv = !rental.closed && rental.items.some(id => {
+      const it = byId.get(id);
+      return it && statusOf(it) === 'ov';
+    });
+    const status = rental.closed ? 'Returned' : anyOv ? 'Overdue' : 'Out';
+    const late = rental.closed && rental.actualDate && rental.actualDate > rental.retDate ? 'Yes' : rental.closed ? 'No' : '';
+    return [
+      rental.id,
+      items.join('; '),
+      rental.event,
+      rental.org,
+      rental.coDate,
+      rental.retDate,
+      rental.actualDate || '',
+      status,
+      late
+    ].map(csvEscape).join(',');
+  });
+  const csv = [header.map(csvEscape).join(','), ...rows].join('\r\n');
+  downloadFile(`penncard-rentals-${datestamp()}.csv`, csv, 'text/csv');
+  toast('Rental history exported.', 'ok');
+}
+
+function exportInventoryCSV() {
+  if (!S.equipment.length) { toast('No inventory to export.', 'err'); return; }
+  const header = ['Item ID','Type','Number','Status','Current Event','Current Org','Checkout Date','Due Date'];
+  const rows = S.equipment
+    .sort((a,b) => a.type.localeCompare(b.type) || a.number - b.number)
+    .map(it => {
+      const st = statusOf(it);
+      const c = it.current;
+      return [
+        itemLabel(it), TYPE[it.type].label, it.number, statusLabel(st),
+        c ? c.event : '', c ? c.org : '', c ? c.coDate : '', c ? c.retDate : ''
+      ].map(csvEscape).join(',');
+    });
+  const csv = [header.map(csvEscape).join(','), ...rows].join('\r\n');
+  downloadFile(`penncard-inventory-${datestamp()}.csv`, csv, 'text/csv');
+  toast('Inventory snapshot exported.', 'ok');
+}
+
+function exportJSON() {
+  downloadFile(`penncard-backup-${datestamp()}.json`, JSON.stringify(S, null, 2), 'application/json');
+  saveMeta({ lastBackup: Date.now() });
+  toast('Backup exported.', 'ok');
+  renderBackupBanner();
+  renderSbLastBackup();
+}
+
+function importJSON(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!Array.isArray(data.equipment) || !Array.isArray(data.rentals) || typeof data.seq !== 'object' || data.seq === null) throw new Error('Invalid');
+      confirm2('Restore from backup?',
+        `This will replace all current data with "${file.name}". This cannot be undone.`,
+        () => { S = data; save(); render(); toast('Data restored from backup.', 'ok'); });
+    } catch(err) {
+      toast('Could not read backup file — may be corrupted.', 'err');
+    }
+    input.value = '';
+  };
+  reader.readAsText(file);
+}
+
+
+// ═══════════════════════════════════════════════════════
+//  BACKUP REMINDER
+// ═══════════════════════════════════════════════════════
+
+function daysSinceBackup() {
+  const m = loadMeta();
+  if (!m.lastBackup) return Infinity;
+  return (Date.now() - m.lastBackup) / (1000 * 60 * 60 * 24);
+}
+
+function fmtLastBackup() {
+  const m = loadMeta();
+  if (!m.lastBackup) return 'Never';
+  return new Date(m.lastBackup).toLocaleDateString('en-US',
+    { month:'short', day:'numeric', year:'numeric' });
+}
+
+function renderBackupBanner() {
+  const el = document.getElementById('backupBanner');
+  if (!el) return;
+  const days = daysSinceBackup();
+  const urgent = days > 14;
+  const warn   = days >= BACKUP_INTERVAL_DAYS;
+  if (!warn) { el.innerHTML = ''; return; }
+
+  const msg = days === Infinity
+    ? 'No backup has ever been made of this system\'s data.'
+    : urgent
+      ? `Last backup was <strong>${Math.floor(days)} days ago.</strong> Data may be at risk.`
+      : `Last backup was <strong>${Math.floor(days)} days ago.</strong> A weekly backup is recommended.`;
+
+  el.innerHTML = `<div class="backup-banner${urgent?' urgent':''}">
+    <div class="bb-left">
+      <span class="bb-icon">${urgent ? '🔴' : '🟡'}</span>
+      <span class="bb-text">${msg}</span>
+    </div>
+    <div class="bb-btns">
+      <button class="btn btn-ghost btn-sm" onclick="dismissBanner()">Remind me later</button>
+      <button class="btn btn-sm ${urgent?'btn-danger':'btn-blue'}" onclick="exportJSON()">Export Backup Now</button>
+    </div>
+  </div>`;
+}
+
+function dismissBanner() {
+  // Snooze for 24 hours by faking the last backup as 6 days ago
+  // (keeps the weekly cadence without permanently silencing the reminder)
+  const snoozeUntil = Date.now() - ((BACKUP_INTERVAL_DAYS - 1) * 24 * 60 * 60 * 1000);
+  saveMeta({ lastBackup: snoozeUntil });
+  document.getElementById('backupBanner').innerHTML = '';
+}
+
+function renderSbLastBackup() {
+  const el = document.getElementById('sbLastBackup');
+  if (el) el.textContent = `Last backup: ${fmtLastBackup()}`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════
+
+render();
+renderBackupBanner();
+renderSbLastBackup();
+checkStorageHealth();
+setInterval(renderHeader, 60000); // refresh clock label
+</script>
+</body>
+</html>
