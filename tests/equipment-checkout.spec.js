@@ -14,9 +14,8 @@ async function freshPage(page) {
 // Helper: add a unit of given type by clicking the "+" button
 async function addUnit(page, type) {
   // type: 'reader' | 'hotspot' | 'charger'
-  const labels = { reader: 'Readers', hotspot: 'Hotspots', charger: 'Charger Sets' };  // sidebar text
-  // The + button is inside .sb-type-hd next to the label
-  const addBtn = page.locator(`.sb-add[onclick="addUnit('${type}')"]`);
+  // The + button is in sidebar and now keyed by data attribute
+  const addBtn = page.locator(`.sb-add[data-add-unit="${type}"]`).first();
   await addBtn.click();
 }
 
