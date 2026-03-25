@@ -1163,9 +1163,6 @@ function renderCalMonth() {
   let html = '<div class="cal-month-grid">';
   html += dayNames.map(d => `<div class="cal-dow">${d}</div>`).join('');
 
-  // Leading empty cells
-  for (let i = 0; i < firstDay; i++) html += '<div class="cal-day empty"></div>';
-
   const visibleEvents = new Set();
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
@@ -1182,7 +1179,9 @@ function renderCalMonth() {
     }).join('');
     const more = active.length > 3 ? `<div class="cal-more">+${active.length - 3} more</div>` : '';
 
-    html += `<div class="cal-day${isToday ? ' cal-today' : ''}">
+    // Position day 1 on the correct column (skip leading empties)
+    const colStart = d === 1 && firstDay > 0 ? ` style="grid-column-start:${firstDay + 1}"` : '';
+    html += `<div class="cal-day${isToday ? ' cal-today' : ''}"${colStart}>
       <div class="cal-day-num">${d}</div>
       ${pills}${more}
     </div>`;
