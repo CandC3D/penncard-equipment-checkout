@@ -186,8 +186,8 @@ const TYPE = {
 };
 
 // State:
-//  equipment: [{id, type, number, status:'avail'|'out', current:null|{rentalId,...}, history:[]}]
-//  rentals:   [{id, items:[itemId,...], event, org, coDate, retDate, actualDate|null, closed}]
+//  equipment: [{id, type, number, status:'avail'|'out', current:null|{rentalId,event,org,coDate,retDate,coTime}, history:[]}]
+//  rentals:   [{id, items:[itemId,...], event, org, coDate, retDate, coTime, actualDate|null, ciTime|null, closed}]
 //  seq:       {reader:N, hotspot:N, charger:N}
 
 let S = load();
@@ -254,11 +254,31 @@ function today() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// Full ISO timestamp for recording when actions occur
+function nowISO() { return new Date().toISOString(); }
+
 function fmtDate(s) {
   if (!s) return '—';
   const [y,m,d] = s.split('-');
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return `${months[+m-1]} ${+d}, ${y}`;
+}
+
+// Format ISO timestamp to readable time (e.g. "2:35 PM")
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' });
+}
+
+// Format ISO timestamp to date + time (e.g. "Mar 24, 2026 at 2:35 PM")
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return fmtDate(iso); // fallback for plain date strings
+  return d.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
+    + ' at ' + d.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' });
 }
 
 function isOverdue(retDate) {
@@ -444,16 +464,17 @@ function confirmCheckout() {
 
   const rentalId = uid();
   const itemIds = [...selected];
+  const coTime = nowISO(); // record exact checkout timestamp
   // Snapshot label and note at moment of checkout — survives device renaming/replacement
   const snapshots = itemIds.map(id => {
     const item = byId.get(id);
     return { id, label: itemLabel(item), note: item.note||'' };
   });
-  S.rentals.push({ id:rentalId, items:itemIds, snapshots, event, org, coDate, retDate, actualDate:null, closed:false });
+  S.rentals.push({ id:rentalId, items:itemIds, snapshots, event, org, coDate, retDate, coTime, actualDate:null, ciTime:null, closed:false });
   itemIds.forEach(id => {
     const item = byId.get(id);
     item.status = 'out';
-    item.current = { rentalId, event, org, coDate, retDate };
+    item.current = { rentalId, event, org, coDate, retDate, coTime };
   });
   save();
   selected.clear();
@@ -480,11 +501,12 @@ function openCheckin(itemId) {
     return it ? { label:itemLabel(it), note:it.note||'' } : { label:id, note:'' };
   })).map(s=>`<b>${escHtml(s.label)}</b>${s.note ? ' — ' + escHtml(s.note) : ''}`).join('<br>');
 
+  const coTimeStr = rental.coTime ? ` at ${fmtTime(rental.coTime)}` : '';
   document.getElementById('ciSub').textContent = `Returning item from: ${item.current.event}`;
   document.getElementById('ciBox').innerHTML = `
     <div><span class="dl">Event:</span> <span class="dv">${escHtml(rental.event)}</span></div>
     <div><span class="dl">Org:</span> <span class="dv">${escHtml(rental.org)}</span></div>
-    <div><span class="dl">Out:</span> <span class="dv">${fmtDate(rental.coDate)}</span></div>
+    <div><span class="dl">Out:</span> <span class="dv">${fmtDate(rental.coDate)}${coTimeStr}</span></div>
     <div><span class="dl">Due:</span> <span class="dv">${fmtDate(rental.retDate)}</span></div>
     <div style="margin-top:6px;font-size:11px;color:var(--s400)">Rental includes: ${sibLines}</div>`;
 
@@ -500,10 +522,11 @@ function confirmCheckin() {
   // Batch return (Return All for event)
   if (ciMode === 'batch') {
     let lateCount = 0;
+    const ciTime = nowISO(); // record exact check-in timestamp
     ciBatchItems.forEach(item => {
       const rental = S.rentals.find(r => r.id === item.current.rentalId);
       if (actual > item.current.retDate) lateCount++;
-      item.history.push({ ...item.current, actualDate: actual });
+      item.history.push({ ...item.current, actualDate: actual, ciTime });
       item.status = 'avail';
       item.current = null;
       if (rental) {
@@ -511,7 +534,7 @@ function confirmCheckin() {
           const it = byId.get(id);
           return it && it.status === 'avail';
         });
-        if (allReturned) { rental.closed = true; rental.actualDate = actual; }
+        if (allReturned) { rental.closed = true; rental.actualDate = actual; rental.ciTime = ciTime; }
       }
     });
     save(); closeModal('oCI'); render();
@@ -525,9 +548,10 @@ function confirmCheckin() {
   // Single item return
   const item = byId.get(ciItemId);
   const rental = S.rentals.find(r=>r.id===ciRentalId);
+  const ciTime = nowISO(); // record exact check-in timestamp
 
   // Add to item history, clear current
-  item.history.push({ ...item.current, actualDate:actual });
+  item.history.push({ ...item.current, actualDate:actual, ciTime });
   item.status = 'avail';
   item.current = null;
 
@@ -539,6 +563,7 @@ function confirmCheckin() {
   if (allReturned) {
     rental.closed = true;
     rental.actualDate = actual;
+    rental.ciTime = ciTime;
   }
 
   save(); closeModal('oCI'); render();
@@ -717,10 +742,11 @@ function cardHtml(item) {
   let details = '';
   if (item.status === 'out' && item.current) {
     const cur = item.current;
+    const coTimeStr = cur.coTime ? ` at ${fmtTime(cur.coTime)}` : '';
     details = `<div class="detail">
       <div><span class="dl">Event:</span> <span class="dv">${escHtml(cur.event)}</span></div>
       <div><span class="dl">Org:</span> <span class="dv">${escHtml(cur.org)}</span></div>
-      <div><span class="dl">Out:</span> <span class="dv">${fmtDate(cur.coDate)}</span></div>
+      <div><span class="dl">Out:</span> <span class="dv">${fmtDate(cur.coDate)}${coTimeStr}</span></div>
       <div><span class="dl">Due:</span> <span class="dv" ${st==='ov'?'style="color:var(--ov);font-weight:600"':''}>${fmtDate(cur.retDate)}</span></div>
     </div>`;
   }
@@ -799,14 +825,16 @@ function renderHistory() {
     const itemCell = r.snaps.map(s =>
       `<div><span class="mono-s">${escHtml(s.label)}</span>${s.note ? `<span style="font-size:10.5px;color:var(--s400);margin-left:5px;">${escHtml(s.note)}</span>` : ''}</div>`
     ).join('');
+    const coTimeStr = r.rental.coTime ? `<div class="mono-s" style="font-size:9px;color:var(--s400)">${fmtTime(r.rental.coTime)}</div>` : '';
+    const ciTimeStr = r.rental.ciTime ? `<div class="mono-s" style="font-size:9px;color:var(--s400)">${fmtTime(r.rental.ciTime)}</div>` : '';
     return `
     <tr>
       <td>${itemCell}</td>
       <td>${escHtml(r.rental.event)}</td>
       <td>${escHtml(r.rental.org)}</td>
-      <td><span class="mono-s">${fmtDate(r.rental.coDate)}</span></td>
+      <td><span class="mono-s">${fmtDate(r.rental.coDate)}</span>${coTimeStr}</td>
       <td><span class="mono-s" ${r.st2==='ov'?'style="color:var(--ov)"':''}>${fmtDate(r.rental.retDate)}</span></td>
-      <td><span class="mono-s">${r.rental.actualDate?fmtDate(r.rental.actualDate):'—'}</span></td>
+      <td><span class="mono-s">${r.rental.actualDate?fmtDate(r.rental.actualDate):'—'}</span>${ciTimeStr}</td>
       <td><span class="pill ${r.st2}" style="font-size:8px">${r.status}</span></td>
     </tr>`;
   }).join('');
@@ -929,7 +957,7 @@ function datestamp() { return today().replace(/-/g, ''); }
 
 function exportHistoryCSV() {
   if (!S.rentals.length) { toast('No rental history to export.', 'err'); return; }
-  const header = ['Rental ID','Item(s)','Event','Organization','Checkout Date','Expected Return','Actual Return','Status','Late Return'];
+  const header = ['Rental ID','Item(s)','Event','Organization','Checkout Date','Checkout Time','Expected Return','Actual Return','Return Time','Status','Late Return'];
   const rows = S.rentals.map(rental => {
     const snaps = rental.snapshots || rental.items.map(id => {
       const it = byId.get(id);
@@ -948,8 +976,10 @@ function exportHistoryCSV() {
       rental.event,
       rental.org,
       rental.coDate,
+      rental.coTime ? fmtTime(rental.coTime) : '',
       rental.retDate,
       rental.actualDate || '',
+      rental.ciTime ? fmtTime(rental.ciTime) : '',
       status,
       late
     ].map(csvEscape).join(',');
@@ -961,7 +991,7 @@ function exportHistoryCSV() {
 
 function exportInventoryCSV() {
   if (!S.equipment.length) { toast('No inventory to export.', 'err'); return; }
-  const header = ['Item ID','Type','Number','Status','Current Event','Current Org','Checkout Date','Due Date'];
+  const header = ['Item ID','Type','Number','Status','Current Event','Current Org','Checkout Date','Checkout Time','Due Date'];
   const rows = S.equipment
     .sort((a,b) => a.type.localeCompare(b.type) || a.number - b.number)
     .map(it => {
@@ -969,7 +999,9 @@ function exportInventoryCSV() {
       const c = it.current;
       return [
         itemLabel(it), TYPE[it.type].label, it.number, statusLabel(st),
-        c ? c.event : '', c ? c.org : '', c ? c.coDate : '', c ? c.retDate : ''
+        c ? c.event : '', c ? c.org : '', c ? c.coDate : '',
+        c && c.coTime ? fmtTime(c.coTime) : '',
+        c ? c.retDate : ''
       ].map(csvEscape).join(',');
     });
   const csv = [header.map(csvEscape).join(','), ...rows].join('\r\n');
@@ -1134,12 +1166,14 @@ function renderCalMonth() {
   // Leading empty cells
   for (let i = 0; i < firstDay; i++) html += '<div class="cal-day empty"></div>';
 
+  const visibleEvents = new Set();
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const isToday = dateStr === todayStr;
 
     // Find rentals active on this day
     const active = rentals.filter(r => r.start <= dateStr && r.end >= dateStr);
+    active.forEach(r => visibleEvents.add(r.rental.event));
     const pills = active.slice(0, 3).map(r => {
       const c = getEventColor(r.rental.event);
       const overdueClass = r.isOverdueRental ? ' cal-pill-ov' : '';
@@ -1155,6 +1189,7 @@ function renderCalMonth() {
   }
   html += '</div>';
   document.getElementById('calBody').innerHTML = html;
+  renderCalLegend(visibleEvents);
 }
 
 // ── Gantt helpers ───────────────────────────────
@@ -1260,13 +1295,16 @@ function renderCalTimeline() {
   if (!rows.length) {
     document.getElementById('calBody').innerHTML =
       '<div class="cal-empty">No rentals in this date range.</div>';
+    renderCalLegend(new Set());
     return;
   }
 
+  const visibleEvents = new Set();
   let html = '<div class="gantt-wrap">';
   html += ganttHeader(range);
 
   rows.forEach(row => {
+    row.rentals.forEach(r => visibleEvents.add(r.rental.event));
     html += `<div class="gantt-row">
       <div class="gantt-label-col">
         <div class="gantt-device-lbl">${itemLabel(row.item)}</div>
@@ -1281,6 +1319,7 @@ function renderCalTimeline() {
 
   html += '</div>';
   document.getElementById('calBody').innerHTML = html;
+  renderCalLegend(visibleEvents);
 }
 
 // ── Event View (grouped by event) ──────────────
@@ -1305,9 +1344,11 @@ function renderCalEvent() {
   if (!eventMap.size) {
     document.getElementById('calBody').innerHTML =
       '<div class="cal-empty">No rentals in this date range.</div>';
+    renderCalLegend(new Set());
     return;
   }
 
+  const visibleEvents = new Set(eventMap.keys());
   let html = '<div class="gantt-wrap">';
   html += ganttHeader(range);
 
@@ -1338,6 +1379,7 @@ function renderCalEvent() {
 
   html += '</div>';
   document.getElementById('calBody').innerHTML = html;
+  renderCalLegend(visibleEvents);
 }
 
 // ── Calendar controls ──────────────────────────
@@ -1351,6 +1393,8 @@ function setCalView(view, btn) {
 
 function calNav(dir) {
   if (calView === 'month') {
+    // Pin to 1st of month to avoid day-overflow wrapping (e.g. Jan 31 + 1 month → Mar 3)
+    calDate.setDate(1);
     calDate.setMonth(calDate.getMonth() + dir);
   } else {
     calDate.setDate(calDate.getDate() + (dir * 7));
@@ -1374,20 +1418,19 @@ function calBarClick(rentalId, itemId) {
   }
 }
 
-function renderCalLegend() {
-  rebuildEventColors();
+function renderCalLegend(visibleEvents) {
   const el = document.getElementById('calLegend');
-  if (!eventColorMap.size) { el.innerHTML = ''; return; }
+  if (!visibleEvents || !visibleEvents.size) { el.innerHTML = ''; return; }
 
-  const chips = [...eventColorMap.entries()].map(([name, c]) =>
-    `<span class="cal-legend-chip" style="background:${c.bg};color:${c.fg};border-color:${c.bar}">${escHtml(name)}</span>`
-  ).join('');
+  const chips = [...visibleEvents].map(name => {
+    const c = getEventColor(name);
+    return `<span class="cal-legend-chip" style="background:${c.bg};color:${c.fg};border-color:${c.bar}">${escHtml(name)}</span>`;
+  }).join('');
   el.innerHTML = chips;
 }
 
 function renderCalendar() {
   rebuildEventColors();
-  renderCalLegend();
   if (calView === 'month') renderCalMonth();
   else if (calView === 'timeline') renderCalTimeline();
   else renderCalEvent();
