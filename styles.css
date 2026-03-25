@@ -275,10 +275,10 @@ tr:hover td{background:var(--bg);}
   border:1.5px solid transparent;border-radius:var(--r4);
   font-family:var(--sans);font-size:11.5px;color:var(--s600);
   background:transparent;outline:none;transition:border-color .15s, background .15s;
-  cursor:text;
+  cursor:default;
 }
-.card-note:hover{border-color:var(--s200);background:var(--bg);}
-.card-note:focus{border-color:var(--blue);background:white;color:var(--s800);}
+.card-note:hover{border-color:var(--s200);background:var(--bg);cursor:text;}
+.card-note:focus{border-color:var(--blue);background:white;color:var(--s800);cursor:text;}
 .card-note::placeholder{color:var(--s400);font-style:italic;}
 .note-snap{font-size:11px;color:var(--s400);font-style:italic;margin-bottom:6px;}
 
