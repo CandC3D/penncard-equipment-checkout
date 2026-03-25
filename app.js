@@ -21,7 +21,11 @@ const TYPE = {
 
 let S = load();
 let byId = new Map();
-function rebuildIndex() { byId = new Map(S.equipment.map(e => [e.id, e])); }
+let rentalById = new Map();
+function rebuildIndex() {
+  byId = new Map(S.equipment.map(e => [e.id, e]));
+  rentalById = new Map(S.rentals.map(r => [r.id, r]));
+}
 rebuildIndex();
 let selected = new Set();   // item ids selected for batch checkout
 let ciItemId = null;        // item being checked in
@@ -341,7 +345,7 @@ function openCheckin(itemId) {
   ciMode = 'single';
   ciItemId = itemId;
   ciRentalId = item.current.rentalId;
-  const rental = S.rentals.find(r=>r.id===ciRentalId);
+  const rental = rentalById.get(ciRentalId);
 
   // Show all items in this rental — use snapshots for historical accuracy
   const sibLines = (rental.snapshots || rental.items.map(id=>{
@@ -372,7 +376,7 @@ function confirmCheckin() {
     let lateCount = 0;
     const ciTime = nowISO(); // record exact check-in timestamp
     ciBatchItems.forEach(item => {
-      const rental = S.rentals.find(r => r.id === item.current.rentalId);
+      const rental = rentalById.get(item.current.rentalId);
       if (actual > item.current.retDate) lateCount++;
       item.history.push({ ...item.current, actualDate: actual, ciTime });
       item.status = 'avail';
@@ -395,7 +399,7 @@ function confirmCheckin() {
 
   // Single item return
   const item = byId.get(ciItemId);
-  const rental = S.rentals.find(r=>r.id===ciRentalId);
+  const rental = rentalById.get(ciRentalId);
   const ciTime = nowISO(); // record exact check-in timestamp
 
   // Add to item history, clear current
@@ -422,7 +426,7 @@ function confirmCheckin() {
 function returnAllForRental(rentalId) {
   const outItems = S.equipment.filter(e => e.status === 'out' && e.current && e.current.rentalId === rentalId);
   if (!outItems.length) return;
-  const rental = S.rentals.find(r => r.id === rentalId);
+  const rental = rentalById.get(rentalId);
   if (!rental) return;
 
   ciMode = 'batch';
@@ -563,7 +567,7 @@ function renderGrids() {
 
   let html = '';
   for (const [rentalId, items] of byRental) {
-    const rental = S.rentals.find(r => r.id === rentalId);
+    const rental = rentalById.get(rentalId);
     const event = rental?.event || items[0]?.current?.event || 'Unknown';
     const hasOverdue = items.some(it => statusOf(it) === 'ov');
     html += `<div class="event-group">
@@ -763,7 +767,9 @@ function bindUIEvents() {
   document.addEventListener('focusout', (e) => {
     const t = e.target;
     if (!(t instanceof Element)) return;
-    if (t.matches('.card-note[data-note-id]')) saveNote(t.getAttribute('data-note-id'), t.value);
+    if (t instanceof HTMLInputElement && t.matches('.card-note[data-note-id]')) {
+      saveNote(t.getAttribute('data-note-id'), t.value);
+    }
   });
 }
 
@@ -973,12 +979,22 @@ function sanitizeBackupData(raw) {
       : null;
     return { id, type: it.type, number, status, note, current, history };
   });
+  const equipmentIdSet = new Set();
+  equipment.forEach(it => {
+    if (equipmentIdSet.has(it.id)) it.id = uid();
+    equipmentIdSet.add(it.id);
+  });
 
   const rentals = raw.rentals.map((r, idx) => {
     if (!r || typeof r !== 'object') throw new Error(`Invalid rental row at index ${idx}`);
-    const items = Array.isArray(r.items) ? r.items.map(String).filter(Boolean) : [];
+    const items = Array.isArray(r.items)
+      ? [...new Set(r.items.map(String).filter(id => equipmentIdSet.has(id)))]
+      : [];
+    if (items.length > 100) throw new Error(`Invalid rental item count at index ${idx}`);
     const snapshots = Array.isArray(r.snapshots)
-      ? r.snapshots.map(s => ({ id: String(s?.id ?? ''), label: cleanText(s?.label, 40), note: cleanText(s?.note, MAX_NOTE_LEN) }))
+      ? r.snapshots
+          .slice(0, 100)
+          .map(s => ({ id: String(s?.id ?? ''), label: cleanText(s?.label, 40), note: cleanText(s?.note, MAX_NOTE_LEN) }))
       : [];
     return {
       id: String(r.id || uid()),
@@ -994,6 +1010,20 @@ function sanitizeBackupData(raw) {
       closed: Boolean(r.closed),
       pruned: Boolean(r.pruned),
     };
+  });
+
+  const rentalIdSet = new Set();
+  rentals.forEach(r => {
+    if (rentalIdSet.has(r.id)) r.id = uid();
+    rentalIdSet.add(r.id);
+  });
+
+  // Ensure equipment current rental references remain valid.
+  equipment.forEach(item => {
+    if (!item.current?.rentalId || !rentalIdSet.has(item.current.rentalId)) {
+      item.status = 'avail';
+      item.current = null;
+    }
   });
 
   return { equipment, rentals, seq };
@@ -1263,7 +1293,7 @@ function renderCalTimeline() {
 
   // Build rows per device that has any rental in range
   const deviceMap = new Map();
-  S.equipment.sort((a,b) => a.type.localeCompare(b.type) || a.number - b.number).forEach(item => {
+  [...S.equipment].sort((a,b) => a.type.localeCompare(b.type) || a.number - b.number).forEach(item => {
     deviceMap.set(item.id, { item, rentals: [] });
   });
   rentals.forEach(r => {
@@ -1394,7 +1424,7 @@ function calToday() {
 }
 
 function calBarClick(rentalId, itemId) {
-  const rental = S.rentals.find(r => r.id === rentalId);
+  const rental = rentalById.get(rentalId);
   if (!rental || rental.closed) return;
 
   // If item is still checked out, open check-in for it
