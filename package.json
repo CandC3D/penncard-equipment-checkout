@@ -1,0 +1,24 @@
+{
+  "name": "equipment-checkout",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CandC3D/penncard-equipment-checkout.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/CandC3D/penncard-equipment-checkout/issues"
+  },
+  "homepage": "https://github.com/CandC3D/penncard-equipment-checkout#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}
