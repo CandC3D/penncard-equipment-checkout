@@ -42,6 +42,7 @@
     <div class="tabs">
       <button class="tab on" onclick="tab('dashboard',this)">Dashboard</button>
       <button class="tab"    onclick="tab('history',this)">Checkout History</button>
+      <button class="tab"    onclick="tab('calendar',this)">Calendar</button>
     </div>
 
     <!-- Dashboard -->
@@ -76,6 +77,25 @@
         </div>
         <div id="histBody"></div>
       </div>
+    </div>
+
+    <!-- Calendar -->
+    <div class="pane" id="pane-calendar">
+      <div class="cal-toolbar">
+        <div class="cal-views">
+          <button class="cal-view on" onclick="setCalView('month',this)">Month</button>
+          <button class="cal-view" onclick="setCalView('timeline',this)">Timeline</button>
+          <button class="cal-view" onclick="setCalView('event',this)">Event</button>
+        </div>
+        <div class="cal-nav">
+          <button class="cal-nav-btn" onclick="calNav(-1)">‹</button>
+          <span class="cal-nav-label" id="calLabel"></span>
+          <button class="cal-nav-btn" onclick="calNav(1)">›</button>
+          <button class="cal-today-btn" onclick="calToday()">Today</button>
+        </div>
+      </div>
+      <div class="cal-legend" id="calLegend"></div>
+      <div id="calBody"></div>
     </div>
   </main>
 </div>
@@ -811,6 +831,7 @@ function tab(id, btn) {
   btn.classList.add('on');
   document.getElementById('pane-'+id).classList.add('on');
   if (id==='history') renderHistory();
+  if (id==='calendar') renderCalendar();
 }
 
 function setFil(type, btn) {
@@ -1038,6 +1059,338 @@ function dismissBanner() {
 function renderSbLastBackup() {
   const el = document.getElementById('sbLastBackup');
   if (el) el.textContent = `Last backup: ${fmtLastBackup()}`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  CALENDAR
+// ═══════════════════════════════════════════════════════
+
+// Event color palette — auto-assigned per unique event name
+const EVENT_COLORS = [
+  { bg:'#E3F2FD', fg:'#1565C0', bar:'#42A5F5' },
+  { bg:'#F3E5F5', fg:'#7B1FA2', bar:'#AB47BC' },
+  { bg:'#E8F5E9', fg:'#2E7D32', bar:'#66BB6A' },
+  { bg:'#FFF3E0', fg:'#E65100', bar:'#FFA726' },
+  { bg:'#FCE4EC', fg:'#C62828', bar:'#EF5350' },
+  { bg:'#E0F7FA', fg:'#00695C', bar:'#26A69A' },
+  { bg:'#FFF9C4', fg:'#F57F17', bar:'#FFEE58' },
+  { bg:'#E8EAF6', fg:'#283593', bar:'#5C6BC0' },
+  { bg:'#EFEBE9', fg:'#4E342E', bar:'#8D6E63' },
+  { bg:'#F1F8E9', fg:'#558B2F', bar:'#9CCC65' },
+];
+const eventColorMap = new Map();
+
+function getEventColor(eventName) {
+  if (eventColorMap.has(eventName)) return eventColorMap.get(eventName);
+  const idx = eventColorMap.size % EVENT_COLORS.length;
+  const c = EVENT_COLORS[idx];
+  eventColorMap.set(eventName, c);
+  return c;
+}
+
+// Rebuild color map from current rentals (preserves assignment across renders)
+function rebuildEventColors() {
+  const seen = new Set(eventColorMap.keys());
+  S.rentals.forEach(r => {
+    if (!seen.has(r.event)) getEventColor(r.event);
+  });
+}
+
+// Calendar state
+let calView = 'month';    // 'month' | 'timeline' | 'event'
+let calDate = new Date();  // anchor date for navigation
+
+// Gather all rental intervals (active + closed) for calendar display
+function calRentals() {
+  return S.rentals.map(rental => {
+    const start = rental.coDate;
+    const end = rental.actualDate || rental.retDate;
+    const items = rental.items.map(id => byId.get(id)).filter(Boolean);
+    const snaps = rental.snapshots || items.map(it => ({ label: itemLabel(it), note: it.note || '' }));
+    const isActive = !rental.closed;
+    const isOverdueRental = isActive && isOverdue(rental.retDate);
+    return { rental, start, end, items, snaps, isActive, isOverdueRental };
+  }).filter(r => r.start); // must have a start date
+}
+
+// ── Month View ──────────────────────────────────
+
+function renderCalMonth() {
+  const year = calDate.getFullYear();
+  const month = calDate.getMonth();
+  document.getElementById('calLabel').textContent =
+    calDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayStr = today();
+  const rentals = calRentals();
+
+  // Build day cells
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  let html = '<div class="cal-month-grid">';
+  html += dayNames.map(d => `<div class="cal-dow">${d}</div>`).join('');
+
+  // Leading empty cells
+  for (let i = 0; i < firstDay; i++) html += '<div class="cal-day empty"></div>';
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const isToday = dateStr === todayStr;
+
+    // Find rentals active on this day
+    const active = rentals.filter(r => r.start <= dateStr && r.end >= dateStr);
+    const pills = active.slice(0, 3).map(r => {
+      const c = getEventColor(r.rental.event);
+      const overdueClass = r.isOverdueRental ? ' cal-pill-ov' : '';
+      const closedClass = !r.isActive ? ' cal-pill-closed' : '';
+      return `<div class="cal-pill${overdueClass}${closedClass}" style="background:${c.bar};color:#fff" title="${escHtml(r.rental.event)}: ${r.snaps.map(s=>s.label).join(', ')}">${escHtml(r.rental.event).slice(0, 12)}</div>`;
+    }).join('');
+    const more = active.length > 3 ? `<div class="cal-more">+${active.length - 3} more</div>` : '';
+
+    html += `<div class="cal-day${isToday ? ' cal-today' : ''}">
+      <div class="cal-day-num">${d}</div>
+      ${pills}${more}
+    </div>`;
+  }
+  html += '</div>';
+  document.getElementById('calBody').innerHTML = html;
+}
+
+// ── Gantt helpers ───────────────────────────────
+
+function ganttRange() {
+  // 4-week window centered on calDate's week
+  const d = new Date(calDate);
+  const dow = d.getDay();
+  d.setDate(d.getDate() - dow); // start of week
+  const start = new Date(d);
+  const end = new Date(d);
+  end.setDate(end.getDate() + 27); // 4 weeks
+  return { start, end, days: 28 };
+}
+
+function dateToStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function daysBetween(a, b) {
+  return Math.round((new Date(b) - new Date(a)) / 86400000);
+}
+
+function ganttHeader(range) {
+  let html = '<div class="gantt-header">';
+  html += '<div class="gantt-label-col"></div>';
+  const d = new Date(range.start);
+  const todayStr = today();
+  for (let i = 0; i < range.days; i++) {
+    const ds = dateToStr(d);
+    const isToday = ds === todayStr;
+    const isSun = d.getDay() === 0;
+    const dayLabel = d.getDate();
+    const showMonth = i === 0 || dayLabel === 1;
+    html += `<div class="gantt-day-hd${isToday ? ' gantt-today-hd' : ''}${isSun ? ' gantt-week-start' : ''}">
+      ${showMonth ? `<div class="gantt-month-lbl">${d.toLocaleDateString('en-US',{month:'short'})}</div>` : ''}
+      <div class="gantt-day-num">${dayLabel}</div>
+    </div>`;
+    d.setDate(d.getDate() + 1);
+  }
+  html += '</div>';
+  return html;
+}
+
+function ganttBar(rental, range, rowHeight) {
+  const startStr = dateToStr(range.start);
+  const endStr = dateToStr(range.end);
+  const rStart = rental.start < startStr ? startStr : rental.start;
+  const rEnd = rental.end > endStr ? endStr : rental.end;
+
+  if (rStart > endStr || rEnd < startStr) return '';
+
+  const left = daysBetween(startStr, rStart);
+  const width = daysBetween(rStart, rEnd) + 1;
+  const c = getEventColor(rental.rental.event);
+  const overdueStyle = rental.isOverdueRental ? 'background-image:repeating-linear-gradient(-45deg,transparent,transparent 3px,rgba(153,0,0,.2) 3px,rgba(153,0,0,.2) 6px);' : '';
+  const closedOpacity = !rental.isActive ? 'opacity:.45;' : '';
+  const pct = (n) => (n / range.days * 100).toFixed(2);
+  const itemId = rental.items[0]?.id || '';
+
+  return `<div class="gantt-bar" style="left:${pct(left)}%;width:${pct(width)}%;background:${c.bar};${overdueStyle}${closedOpacity}" title="${escHtml(rental.rental.event)}: ${rental.snaps.map(s=>s.label).join(', ')} (${rental.start} → ${rental.end})" onclick="calBarClick('${rental.rental.id}','${itemId}')">${escHtml(rental.rental.event).slice(0, 18)}</div>`;
+}
+
+// Today line for gantt views
+function ganttTodayLine(range) {
+  const todayStr = today();
+  const startStr = dateToStr(range.start);
+  const endStr = dateToStr(range.end);
+  if (todayStr < startStr || todayStr > endStr) return '';
+  const offset = daysBetween(startStr, todayStr);
+  const pct = ((offset + 0.5) / range.days * 100).toFixed(2);
+  return `<div class="gantt-today-line" style="left:${pct}%"></div>`;
+}
+
+// ── Timeline View (by device) ──────────────────
+
+function renderCalTimeline() {
+  const range = ganttRange();
+  document.getElementById('calLabel').textContent =
+    `${dateToStr(range.start).slice(5)} — ${dateToStr(range.end).slice(5)}`;
+
+  const rentals = calRentals();
+  const startStr = dateToStr(range.start);
+  const endStr = dateToStr(range.end);
+
+  // Build rows per device that has any rental in range
+  const deviceMap = new Map();
+  S.equipment.sort((a,b) => a.type.localeCompare(b.type) || a.number - b.number).forEach(item => {
+    deviceMap.set(item.id, { item, rentals: [] });
+  });
+  rentals.forEach(r => {
+    if (r.start > endStr || r.end < startStr) return;
+    r.items.forEach(item => {
+      if (deviceMap.has(item.id)) {
+        deviceMap.get(item.id).rentals.push(r);
+      }
+    });
+  });
+
+  // Filter to devices with rentals in range
+  const rows = [...deviceMap.values()].filter(d => d.rentals.length > 0);
+
+  if (!rows.length) {
+    document.getElementById('calBody').innerHTML =
+      '<div class="cal-empty">No rentals in this date range.</div>';
+    return;
+  }
+
+  let html = '<div class="gantt-wrap">';
+  html += ganttHeader(range);
+
+  rows.forEach(row => {
+    html += `<div class="gantt-row">
+      <div class="gantt-label-col">
+        <div class="gantt-device-lbl">${itemLabel(row.item)}</div>
+        <div class="gantt-device-type">${TYPE[row.item.type].label}</div>
+      </div>
+      <div class="gantt-track">
+        ${ganttTodayLine(range)}
+        ${row.rentals.map(r => ganttBar(r, range)).join('')}
+      </div>
+    </div>`;
+  });
+
+  html += '</div>';
+  document.getElementById('calBody').innerHTML = html;
+}
+
+// ── Event View (grouped by event) ──────────────
+
+function renderCalEvent() {
+  const range = ganttRange();
+  document.getElementById('calLabel').textContent =
+    `${dateToStr(range.start).slice(5)} — ${dateToStr(range.end).slice(5)}`;
+
+  const rentals = calRentals();
+  const startStr = dateToStr(range.start);
+  const endStr = dateToStr(range.end);
+
+  // Group by event
+  const eventMap = new Map();
+  rentals.forEach(r => {
+    if (r.start > endStr || r.end < startStr) return;
+    if (!eventMap.has(r.rental.event)) eventMap.set(r.rental.event, []);
+    eventMap.get(r.rental.event).push(r);
+  });
+
+  if (!eventMap.size) {
+    document.getElementById('calBody').innerHTML =
+      '<div class="cal-empty">No rentals in this date range.</div>';
+    return;
+  }
+
+  let html = '<div class="gantt-wrap">';
+  html += ganttHeader(range);
+
+  for (const [event, eventRentals] of eventMap) {
+    const c = getEventColor(event);
+    // Show each rental as a separate row under the event header
+    html += `<div class="gantt-event-group">
+      <div class="gantt-event-hd" style="border-left:3px solid ${c.bar}">
+        <div class="gantt-event-name">${escHtml(event)}</div>
+        <div class="gantt-event-count">${eventRentals.reduce((n, r) => n + r.snaps.length, 0)} items</div>
+      </div>`;
+
+    eventRentals.forEach(r => {
+      const itemLabels = r.snaps.map(s => s.label).join(', ');
+      html += `<div class="gantt-row gantt-row-sm">
+        <div class="gantt-label-col">
+          <div class="gantt-device-lbl" style="font-size:10px">${escHtml(itemLabels)}</div>
+        </div>
+        <div class="gantt-track">
+          ${ganttTodayLine(range)}
+          ${ganttBar(r, range)}
+        </div>
+      </div>`;
+    });
+
+    html += '</div>';
+  }
+
+  html += '</div>';
+  document.getElementById('calBody').innerHTML = html;
+}
+
+// ── Calendar controls ──────────────────────────
+
+function setCalView(view, btn) {
+  calView = view;
+  document.querySelectorAll('.cal-view').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  renderCalendar();
+}
+
+function calNav(dir) {
+  if (calView === 'month') {
+    calDate.setMonth(calDate.getMonth() + dir);
+  } else {
+    calDate.setDate(calDate.getDate() + (dir * 7));
+  }
+  renderCalendar();
+}
+
+function calToday() {
+  calDate = new Date();
+  renderCalendar();
+}
+
+function calBarClick(rentalId, itemId) {
+  const rental = S.rentals.find(r => r.id === rentalId);
+  if (!rental || rental.closed) return;
+
+  // If item is still checked out, open check-in for it
+  const item = byId.get(itemId);
+  if (item && item.status === 'out') {
+    openCheckin(itemId);
+  }
+}
+
+function renderCalLegend() {
+  rebuildEventColors();
+  const el = document.getElementById('calLegend');
+  if (!eventColorMap.size) { el.innerHTML = ''; return; }
+
+  const chips = [...eventColorMap.entries()].map(([name, c]) =>
+    `<span class="cal-legend-chip" style="background:${c.bg};color:${c.fg};border-color:${c.bar}">${escHtml(name)}</span>`
+  ).join('');
+  el.innerHTML = chips;
+}
+
+function renderCalendar() {
+  rebuildEventColors();
+  renderCalLegend();
+  if (calView === 'month') renderCalMonth();
+  else if (calView === 'timeline') renderCalTimeline();
+  else renderCalEvent();
 }
 
 // ═══════════════════════════════════════════════════════
