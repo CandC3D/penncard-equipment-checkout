@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════════════
-//  Equipment Checkout v1.1
-//  CONSTANTS & STATE
+//  Equipment Checkout v1.1.1 CODEX//  CONSTANTS & STATE
 // ═══════════════════════════════════════════════════════
 
 const STORE = 'pennco-v3';

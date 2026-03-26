@@ -45,7 +45,7 @@ test.describe('Section 1: Initial State', () => {
     // Header text
     await expect(page.locator('.h-unit').first()).toHaveText('PennCard Center');
     await expect(page.locator('.h-app')).toHaveText('Equipment Checkout');
-    await expect(page.locator('header')).toContainText('v1.1');
+    await expect(page.locator('header')).toContainText('v1.1.1 CODEX');
 
     // Date shown
     const dateText = await page.locator('#hDate').textContent();
