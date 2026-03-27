@@ -1,90 +1,70 @@
-# Security & Quality Review: `index.html`
+# Security & Quality Review: PennCard Equipment Checkout v1.2.0
 
-Date: 2026-03-25
-Scope: `/workspace/penncard-equipment-checkout/index.html`
+Date: 2026-03-26
+Author: Codex
+Scope: Full application (`index.html`, `app.js`, `styles.css`)
 
 ## Summary
 
-I reviewed the app for client-side vulnerabilities, input/data hardening gaps, and reliability issues that could lead to data loss or abuse.
-
-## Findings (Flagged for Review)
-
-### 1) Missing Content Security Policy + heavy inline script/handlers (High)
-
-The page executes a large inline `<script>` block and many inline `onclick`/`onchange` attributes.
-Without a strict CSP, any HTML/script injection bug can execute arbitrary script in the app origin.
-
-**Why this matters**
-- CSP is a major compensating control for XSS.
-- Current architecture makes CSP harder to deploy because of inline handlers.
-
-**Recommendation**
-- Move inline handlers to `addEventListener` bindings.
-- Move inline script into external JS file.
-- Add a CSP meta/header that disables inline script (nonce/hash-based exceptions only if needed).
+This review covers the v1.2.0 hardening pass applied to the Codex-authored Equipment Checkout application. The previous review (v1.1) identified five findings. All five have been resolved. Additional hardening measures were introduced in v1.2.0.
 
 ---
 
-### 2) Backup import trust boundary is weak (Medium)
+## Previous Findings — Status
 
-`importJSON()` only checks top-level shapes (`equipment`, `rentals`, `seq`) and then assigns `S = data` directly.
-Malformed or adversarial JSON can create inconsistent state, runtime errors, or a persistent app DoS.
+### 1) Inline script/handlers + missing CSP (High) — RESOLVED
+- All inline event handlers removed in v1.1 (Codex conversion).
+- CSP meta tag added with `script-src 'self'`.
+- **v1.2.0**: Removed `'unsafe-inline'` from `style-src`. All inline `style=""` attributes converted to CSS classes or applied via CSSOM API.
 
-**Examples**
-- Unknown `type` values break rendering paths expecting `TYPE[item.type]`.
-- Wrong field types can break date comparisons and history views.
-- Very large arrays could bloat localStorage and force repeated prune/error paths.
+### 2) Weak backup import validation (Medium) — RESOLVED
+- `sanitizeBackupData()` performs deep schema validation, type checking, field length enforcement, ID deduplication, and reference integrity checks.
+- File size capped at 10 MB. Equipment capped at 1,000 items; rentals at 10,000.
 
-**Recommendation**
-- Add strict schema validation (per-item and per-rental) before assignment.
-- Reject unknown enum values (`reader|hotspot|charger`).
-- Enforce max lengths for `event`, `org`, and `note` in imported data.
-- Normalize missing/invalid fields to safe defaults.
+### 3) LocalStorage plaintext data (Medium) — MITIGATED
+- **v1.2.0**: FNV-1a integrity hash stored in metadata. On load, hash mismatch triggers a user-visible warning toast.
+- Shadow storage fallback now runs through `sanitizeBackupData()` before acceptance.
+- Risk documented: shared workstations can expose/alter data. Server-side persistence recommended for production.
 
----
+### 4) "Return All" scoped by event name (Medium) — RESOLVED
+- `returnAllForRental()` scoped by `rentalId`, not event name string.
 
-### 3) LocalStorage contains operational data in plaintext (Medium)
-
-All checkout history and metadata are stored in browser `localStorage`.
-Any script running in the same origin can read/modify this data.
-
-**Why this matters**
-- If this is used on shared workstations or a compromised browser profile, records can be exposed/altered.
-
-**Recommendation**
-- Document this risk clearly for operators.
-- Prefer server-side persistence with auth + audit trail for production use.
-- If remaining client-only, consider integrity checks and explicit "trusted device" guidance.
+### 5) Export sorting side effect (Low) — RESOLVED
+- `exportInventoryCSV()` sorts a shallow copy (`[...S.equipment].sort(...)`).
 
 ---
 
-### 4) Data integrity bug: event-level "Return All" can cross rental boundaries (Medium)
+## New Hardening in v1.2.0
 
-`returnAllForEvent(eventName)` batches all checked-out items matching event name text only.
-If two different rentals reuse the same event name, one return action can unintentionally close/update multiple rentals.
+### Security
+- **CSP tightened**: `style-src` no longer includes `'unsafe-inline'`. Dynamic styles (Gantt positioning, event colors) applied via CSSOM API and CSS classes.
+- **Storage integrity**: FNV-1a hash verifies localStorage data has not been tampered with externally.
+- **Shadow fallback validation**: Shadow storage data is validated through `sanitizeBackupData()` before use.
+- **UUID fallback**: `crypto.randomUUID()` feature detection with Math.random fallback for non-secure contexts.
+- **Equipment rate limit**: Maximum 200 equipment items enforced in `addUnit()`.
+- **Magic numbers extracted**: All limits (file size, item counts, field lengths) defined as named constants.
 
-**Recommendation**
-- Scope "Return All" by `rentalId` instead of event string.
-- Group checked-out sections by rental record (or event + rental id).
+### Performance
+- **Conditional rendering**: `render()` only updates the active tab's content (dashboard/history/calendar).
+- **Debounced search**: History search input debounced at 250ms to prevent excessive re-renders.
+- **Paginated history**: History table shows 50 rows at a time with "Load more" button.
+- **Cached storage usage**: `storageUsage()` uses cached byte count from most recent save instead of full localStorage scan.
+- **Replaced setInterval**: Header date refreshes on `visibilitychange` instead of 60-second polling.
+
+### Features
+- **Sortable history columns**: Click column headers to sort by event, org, date, status.
+- **Print stylesheet**: `@media print` rules hide UI chrome and optimize layout for paper.
+- **ARIA accessibility**: Tab bar uses `role="tablist"`, tabs use `role="tab"` with `aria-selected`. Toast container has `aria-live="assertive"`. Calendar nav buttons have `aria-label`.
+
+### Code Quality
+- **Codex attribution**: File headers, section banners, and version strings credit Codex.
+- **Naming convention documented**: Header comment explains abbreviated vs. full-word function names.
+- **Constants centralized**: All numeric limits defined at top of `app.js`.
 
 ---
 
-### 5) Reliability bug: sorting side effect in export path (Low)
+## Remaining Considerations
 
-`exportInventoryCSV()` sorts `S.equipment` in place.
-While mostly harmless, mutating canonical state during export can cause unexpected order changes elsewhere.
-
-**Recommendation**
-- Sort a shallow copy (`[...S.equipment].sort(...)`) to avoid side effects.
-
-## Quick Wins
-
-1. Add JSON schema validation for imports (highest ROI).
-2. Refactor inline handlers/scripts and introduce CSP.
-3. Bind "Return All" to rental IDs.
-4. Make export sorting immutable.
-
-## Notes
-
-- I did not find an obvious direct DOM-XSS sink in current render paths because user-provided fields are generally escaped with `escHtml()`.
-- The biggest practical risk is **future injection + no CSP** and **state poisoning through weak import validation**.
+1. **innerHTML pattern**: Rendering still uses string concatenation + `innerHTML`. All user inputs pass through `escHtml()`. A full migration to DOM construction APIs would eliminate residual XSS risk but is not warranted for the current threat model.
+2. **No server-side persistence**: All data lives in browser localStorage. For multi-device or multi-operator use, a backend with authentication and audit logging is recommended.
+3. **No undo/redo**: Accidental deletions are permanent (confirmation dialogs mitigate but don't eliminate risk).

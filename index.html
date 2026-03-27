@@ -1,10 +1,10 @@
-<!-- Equipment Checkout v1.1 -->
+<!-- PennCard Equipment Checkout v1.2.0 — Codex -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
 <title>PennCard Equipment Checkout</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
@@ -15,7 +15,7 @@
   <div class="h-left">
     <span class="h-unit">PennCard Center</span>
     <span class="h-app">Equipment Checkout</span>
-    <span class="h-unit" style="border-right:none;padding-right:0;padding-left:0;">v1.1.1 CODEX</span>
+    <span class="h-unit h-version">v1.2.0 CODEX</span>
   </div>
   <span class="h-date" id="hDate"></span>
 </header>
@@ -40,14 +40,14 @@
   <main>
     <div id="backupBanner"></div>
     <div id="storageBanner"></div>
-    <div class="tabs">
-      <button class="tab on" data-tab="dashboard">Dashboard</button>
-      <button class="tab" data-tab="history">Checkout History</button>
-      <button class="tab" data-tab="calendar">Calendar</button>
+    <div class="tabs" role="tablist" aria-label="Main navigation">
+      <button class="tab on" data-tab="dashboard" role="tab" aria-selected="true" aria-controls="pane-dashboard">Dashboard</button>
+      <button class="tab" data-tab="history" role="tab" aria-selected="false" aria-controls="pane-history">Checkout History</button>
+      <button class="tab" data-tab="calendar" role="tab" aria-selected="false" aria-controls="pane-calendar">Calendar</button>
     </div>
 
     <!-- Dashboard -->
-    <div class="pane on" id="pane-dashboard">
+    <div class="pane on" id="pane-dashboard" role="tabpanel">
       <div class="stats" id="statsRow"></div>
       <div id="ovBanner"></div>
       <div id="actionBar"></div>
@@ -63,7 +63,7 @@
     </div>
 
     <!-- History -->
-    <div class="pane" id="pane-history">
+    <div class="pane" id="pane-history" role="tabpanel">
       <div class="export-bar">
         <span class="export-lbl">Export</span>
         <div class="export-btns">
@@ -81,7 +81,7 @@
     </div>
 
     <!-- Calendar -->
-    <div class="pane" id="pane-calendar">
+    <div class="pane" id="pane-calendar" role="tabpanel">
       <div class="cal-toolbar">
         <div class="cal-views">
           <button class="cal-view on" data-cal-view="month">Month</button>
@@ -89,9 +89,9 @@
           <button class="cal-view" data-cal-view="event">Event</button>
         </div>
         <div class="cal-nav">
-          <button class="cal-nav-btn" id="btnCalPrev">‹</button>
+          <button class="cal-nav-btn" id="btnCalPrev" aria-label="Previous period">‹</button>
           <span class="cal-nav-label" id="calLabel"></span>
-          <button class="cal-nav-btn" id="btnCalNext">›</button>
+          <button class="cal-nav-btn" id="btnCalNext" aria-label="Next period">›</button>
           <button class="cal-today-btn" id="btnCalToday">Today</button>
         </div>
       </div>
@@ -158,7 +158,7 @@
 <div class="overlay" id="oCFM">
   <div class="modal cdlg">
     <div class="modal-title" id="cfmTitle"></div>
-    <div class="modal-sub" style="margin-bottom:14px"></div>
+    <div class="modal-sub cdlg-sub"></div>
     <div class="cdlg-body" id="cfmBody"></div>
     <div class="cdlg-btns">
       <button class="btn btn-ghost" data-close-modal="oCFM">Cancel</button>
@@ -167,7 +167,7 @@
   </div>
 </div>
 
-<div class="toasts" id="toasts"></div>
+<div class="toasts" id="toasts" aria-live="assertive" role="status"></div>
 
 <script src="app.js" defer></script>
 

@@ -1,12 +1,36 @@
 // ═══════════════════════════════════════════════════════
-//  Equipment Checkout v1.1.1 CODEX//  CONSTANTS & STATE
+//  PennCard Equipment Checkout v1.2.0
+//  @author  Codex
+//  @license Internal — University of Pennsylvania PennCard Center
+//
+//  Naming conventions:
+//    - Render / lifecycle functions: full words (renderSidebar, confirmCheckout)
+//    - Utility helpers: abbreviated (escHtml, fmtDate, setFil)
+//    - Constants: UPPER_SNAKE_CASE
 // ═══════════════════════════════════════════════════════
 
+// ── Storage keys ───────────────────────────────────────
 const STORE = 'pennco-v3';
 const STORE_SHADOW = 'pennco-v3-shadow';
 const STORE_META   = 'pennco-v3-meta';
-const BACKUP_INTERVAL_DAYS = 7;
 
+// ── Limits & thresholds ────────────────────────────────
+const BACKUP_INTERVAL_DAYS  = 7;
+const MAX_EQUIPMENT         = 200;
+const MAX_RENTALS_IMPORT    = 10000;
+const MAX_EQUIPMENT_IMPORT  = 1000;
+const STORAGE_LIMIT_BYTES   = 5 * 1024 * 1024;  // 5 MB localStorage cap
+const MAX_EVENT_LEN         = 120;
+const MAX_ORG_LEN           = 120;
+const MAX_NOTE_LEN          = 80;
+const MAX_MONTH_PILLS       = 3;
+const HISTORY_PAGE_SIZE     = 50;
+const SEARCH_DEBOUNCE_MS    = 250;
+const MAX_BACKUP_FILE_BYTES = 10 * 1024 * 1024;  // 10 MB import cap
+const MAX_ITEMS_PER_RENTAL  = 100;
+const MAX_SNAP_LABEL_LEN    = 40;
+
+// ── Equipment types ────────────────────────────────────
 const TYPE = {
   reader:  { label:'Reader',         plural:'Readers',        icon:'🪪', pfx:'RDR' },
   hotspot: { label:'Mobile Hotspot', plural:'Mobile Hotspots',icon:'📶', pfx:'HSP' },
@@ -33,16 +57,46 @@ let activeFilter = 'all';
 let ciMode = 'single';      // 'single' or 'batch' for check-in modal
 let ciBatchItems = [];       // items being returned in batch mode
 let _pruning = false;        // recursion guard for storage health checks
+let _integrityWarning = false; // set if localStorage hash mismatch detected
+let _lastSavedBytes = 0;     // cached byte count from most recent save()
 
 // ═══════════════════════════════════════════════════════
 //  PERSISTENCE
 // ═══════════════════════════════════════════════════════
 
+/** FNV-1a hash for lightweight data-integrity checks (not cryptographic). */
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
 function load() {
-  try {
-    const raw = localStorage.getItem(STORE);
-    if (raw) return JSON.parse(raw);
-  } catch(e) {}
+  // Try primary store first, then shadow fallback
+  for (const key of [STORE, STORE_SHADOW]) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      // Validate shadow data the same way we validate imports
+      if (key === STORE_SHADOW) {
+        return sanitizeBackupData(parsed);
+      }
+      // Verify integrity hash if present
+      const meta = loadMeta();
+      if (meta.hash && fnv1a(raw) !== meta.hash) {
+        console.warn('Codex: localStorage integrity mismatch — data may have been modified externally.');
+        // Still load, but flag for user on next render
+        _integrityWarning = true;
+      }
+      return parsed;
+    } catch (e) {
+      console.warn(`Codex: failed to load from ${key}`, e);
+    }
+  }
   return { equipment:[], rentals:[], seq:{reader:1,hotspot:1,charger:1} };
 }
 
@@ -52,6 +106,11 @@ function save() {
   try {
     localStorage.setItem(STORE, serialized);
     localStorage.setItem(STORE_SHADOW, serialized);
+    // Store integrity hash alongside metadata
+    const meta = loadMeta();
+    meta.hash = fnv1a(serialized);
+    localStorage.setItem(STORE_META, JSON.stringify(meta));
+    _lastSavedBytes = serialized.length * 2; // cache for storageUsage
   } catch (e) {
     // QuotaExceededError — force prune and retry
     pruneOldData(2);
@@ -59,6 +118,7 @@ function save() {
     try {
       localStorage.setItem(STORE, pruned);
       localStorage.setItem(STORE_SHADOW, pruned);
+      _lastSavedBytes = pruned.length * 2;
     } catch (e2) {
       toast('Storage is full. Please export a backup and clear old data.', 'err');
     }
@@ -79,7 +139,17 @@ function saveMeta(patch) {
 //  UTILITIES
 // ═══════════════════════════════════════════════════════
 
-function uid() { return crypto.randomUUID(); }
+/** Generate UUID — falls back to Math.random if crypto.randomUUID unavailable. */
+function uid() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback for non-secure contexts (HTTP) or older browsers
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
 
 function today() {
   const d = new Date();
@@ -135,9 +205,6 @@ function escHtml(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g, '&#39;');
 }
 
-const MAX_EVENT_LEN = 120;
-const MAX_ORG_LEN = 120;
-const MAX_NOTE_LEN = 80;
 const VALID_TYPES = new Set(Object.keys(TYPE));
 
 function cleanText(v, maxLen) {
@@ -154,14 +221,21 @@ function normalizeIso(v) {
   return s && !isNaN(new Date(s)) ? new Date(s).toISOString() : null;
 }
 
-function storageUsage() {
+/** Estimate localStorage usage. Uses cached byte count when available to avoid full scan. */
+function storageUsage(forceFullScan) {
+  if (!forceFullScan && _lastSavedBytes > 0) {
+    // Approximate: our app data dominates localStorage usage
+    return { used: _lastSavedBytes, limit: STORAGE_LIMIT_BYTES, pct: _lastSavedBytes / STORAGE_LIMIT_BYTES };
+  }
   let total = 0;
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     total += key.length + localStorage.getItem(key).length;
   }
-  // UTF-16 = 2 bytes per char; 5MB is the common localStorage limit
-  return { used: total * 2, limit: 5 * 1024 * 1024, pct: (total * 2) / (5 * 1024 * 1024) };
+  // UTF-16 = 2 bytes per char
+  const used = total * 2;
+  _lastSavedBytes = used;
+  return { used, limit: STORAGE_LIMIT_BYTES, pct: used / STORAGE_LIMIT_BYTES };
 }
 
 function pruneOldData(monthsToKeep) {
@@ -241,6 +315,10 @@ function saveNote(id, val) {
 // ═══════════════════════════════════════════════════════
 
 function addUnit(type) {
+  if (S.equipment.length >= MAX_EQUIPMENT) {
+    toast(`Equipment limit reached (${MAX_EQUIPMENT} units). Remove unused items first.`, 'err');
+    return;
+  }
   // Find lowest positive integer not currently in use for this type
   const used = new Set(S.equipment.filter(e=>e.type===type).map(e=>e.number));
   let num = 1;
@@ -359,7 +437,7 @@ function openCheckin(itemId) {
     <div><span class="dl">Org:</span> <span class="dv">${escHtml(rental.org)}</span></div>
     <div><span class="dl">Out:</span> <span class="dv">${fmtDate(rental.coDate)}${coTimeStr}</span></div>
     <div><span class="dl">Due:</span> <span class="dv">${fmtDate(rental.retDate)}</span></div>
-    <div style="margin-top:6px;font-size:11px;color:var(--s400)">Rental includes: ${sibLines}</div>`;
+    <div class="ci-detail-list">Rental includes: ${sibLines}</div>`;
 
   document.getElementById('fActual').value = today();
   document.getElementById('eActual').classList.remove('show');
@@ -443,7 +521,7 @@ function returnAllForRental(rentalId) {
   document.getElementById('ciBox').innerHTML = `
     <div><span class="dl">Event:</span> <span class="dv">${escHtml(eventName)}</span></div>
     ${org ? `<div><span class="dl">Org:</span> <span class="dv">${escHtml(org)}</span></div>` : ''}
-    <div style="margin-top:6px;font-size:11px;color:var(--s400)">Items to return (${outItems.length}):<br>${itemLines}</div>`;
+    <div class="ci-detail-list">Items to return (${outItems.length}):<br>${itemLines}</div>`;
 
   document.getElementById('fActual').value = today();
   document.getElementById('eActual').classList.remove('show');
@@ -454,14 +532,40 @@ function returnAllForRental(rentalId) {
 //  RENDER
 // ═══════════════════════════════════════════════════════
 
+// ── History sort & pagination state ────────────────────
+let histSort = { col: 'coDate', dir: 'desc' };
+let histPage = 1;
+
+/** Debounce helper — returns a wrapper that delays invocation. */
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+function activeTab() {
+  const el = document.querySelector('.tab.on');
+  return el ? el.dataset.tab : 'dashboard';
+}
+
 function render() {
   renderHeader();
   renderSidebar();
   renderStats();
-  renderOverdue();
-  renderActionBar();
-  renderGrids();
-  renderHistory();
+  // Show integrity warning once if hash mismatch was detected on load
+  if (_integrityWarning) {
+    toast('Data integrity warning: localStorage may have been modified externally.', 'err');
+    _integrityWarning = false;
+  }
+  const tab = activeTab();
+  if (tab === 'dashboard') {
+    renderOverdue();
+    renderActionBar();
+    renderGrids();
+  } else if (tab === 'history') {
+    renderHistory();
+  } else if (tab === 'calendar') {
+    renderCalendar();
+  }
 }
 
 function renderHeader() {
@@ -505,9 +609,9 @@ function renderStats() {
   const ov    = eq.filter(e=>statusOf(e)==='ov').length;
   document.getElementById('statsRow').innerHTML = `
     <div class="stat"><div class="stat-lbl">Total Units</div><div class="stat-n">${eq.length}</div><div class="stat-sub">${Object.keys(TYPE).map(t=>{const c=eq.filter(e=>e.type===t).length;return c?`${c} ${TYPE[t].plural}`:''}).filter(Boolean).join(', ')||'None added'}</div></div>
-    <div class="stat"><div class="stat-lbl">Available</div><div class="stat-n" style="color:var(--ok)">${avail}</div><div class="stat-sub">Ready to check out</div></div>
-    <div class="stat"><div class="stat-lbl">Checked Out</div><div class="stat-n" style="color:var(--warn)">${out}</div><div class="stat-sub">${ov > 0 ? `<span style="color:var(--ov);font-weight:700">${ov} overdue</span>` : 'All on time'}</div></div>
-    <div class="stat"><div class="stat-lbl">Total Rentals</div><div class="stat-n">${S.rentals.length}</div><div class="stat-sub">${S.rentals.filter(r=>r.closed).length} completed</div></div>`;
+    <div class="stat"><div class="stat-lbl">Available</div><div class="stat-n text-ok">${avail}</div><div class="stat-sub">Ready to check out</div></div>
+    <div class="stat"><div class="stat-lbl">Checked Out</div><div class="stat-n text-warn">${out}</div><div class="stat-sub">${ov > 0 ? `<span class="text-ov text-bold">${ov} overdue</span>` : 'All on time'}</div></div>
+    <div class="stat"><div class="stat-lbl">Total Rentals</div><div class="stat-n">${S.rentals.length}</div><div class="stat-sub">${S.rentals.filter(r=>r.closed).length} completed</div></div>`; // safe: all numeric values
 }
 
 function renderOverdue() {
@@ -530,7 +634,7 @@ function renderActionBar() {
     </div>
     <div class="ab-btns">
       <button class="btn btn-white btn-sm" data-action="clear-selection">✕ Clear</button>
-      <button class="btn btn-blue btn-sm" style="background:#fff;color:var(--blue)" data-action="open-checkout">Check Out Selected →</button>
+      <button class="btn btn-checkout-inv btn-sm" data-action="open-checkout">Check Out Selected →</button>
     </div>
   </div>`;
 }
@@ -571,10 +675,10 @@ function renderGrids() {
     const hasOverdue = items.some(it => statusOf(it) === 'ov');
     html += `<div class="event-group">
       <div class="event-group-hd">
-        <div class="sec" style="margin-bottom:0;flex:1">
-          <span style="display:inline-flex;align-items:center;gap:8px;">
+        <div class="sec sec-flush">
+          <span class="sec-event-label">
             Checked Out — ${escHtml(event)}
-            ${hasOverdue ? '<span class="pill ov" style="margin:0;font-size:7.5px;">Overdue</span>' : ''}
+            ${hasOverdue ? '<span class="pill ov pill-xs">Overdue</span>' : ''}
           </span>
         </div>
         <button class="btn btn-ci btn-sm" data-return-rental="${escHtml(rentalId)}">Return All →</button>
@@ -600,7 +704,7 @@ function cardHtml(item) {
       <div><span class="dl">Event:</span> <span class="dv">${escHtml(cur.event)}</span></div>
       <div><span class="dl">Org:</span> <span class="dv">${escHtml(cur.org)}</span></div>
       <div><span class="dl">Out:</span> <span class="dv">${fmtDate(cur.coDate)}${coTimeStr}</span></div>
-      <div><span class="dl">Due:</span> <span class="dv" ${st==='ov'?'style="color:var(--ov);font-weight:600"':''}>${fmtDate(cur.retDate)}</span></div>
+      <div><span class="dl">Due:</span> <span class="dv${st==='ov'?' text-ov text-semibold':''}">${fmtDate(cur.retDate)}</span></div>
     </div>`;
   }
 
@@ -635,6 +739,17 @@ function cardHtml(item) {
   </div>`;
 }
 
+function toggleHistSort(col) {
+  if (histSort.col === col) {
+    histSort.dir = histSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    histSort.col = col;
+    histSort.dir = col === 'coDate' || col === 'retDate' ? 'desc' : 'asc';
+  }
+  histPage = 1;
+  renderHistory();
+}
+
 function renderHistory() {
   const q = (document.getElementById('hsearch')?.value||'').toLowerCase();
 
@@ -645,7 +760,6 @@ function renderHistory() {
     const isOv = !rental.closed && items.some(it=>statusOf(it)==='ov');
     const status = rental.closed ? 'Returned' : isOv ? 'Overdue' : 'Out';
     const st2 = rental.closed ? 'ok' : isOv ? 'ov' : 'out';
-    // Use snapshot labels if present; live labels as fallback; pruned rentals use item IDs
     const snaps = rental.snapshots
       || (rental.pruned
         ? rental.items.map(id => { const it = byId.get(id); return it ? { label: itemLabel(it), note: it.note||'' } : { label: id, note: '' }; })
@@ -663,42 +777,72 @@ function renderHistory() {
       || r.itemLabels.toLowerCase().includes(q);
   });
 
-  // Most recent first
-  filt.sort((a,b)=>b.rental.coDate.localeCompare(a.rental.coDate));
+  // Sort — supports sortable columns
+  const { col, dir } = histSort;
+  const mult = dir === 'asc' ? 1 : -1;
+  filt.sort((a, b) => {
+    let va, vb;
+    switch (col) {
+      case 'event':   va = a.rental.event.toLowerCase();   vb = b.rental.event.toLowerCase(); break;
+      case 'org':     va = a.rental.org.toLowerCase();     vb = b.rental.org.toLowerCase();   break;
+      case 'coDate':  va = a.rental.coDate;  vb = b.rental.coDate;  break;
+      case 'retDate': va = a.rental.retDate; vb = b.rental.retDate; break;
+      case 'actual':  va = a.rental.actualDate || ''; vb = b.rental.actualDate || ''; break;
+      case 'status':  va = a.status; vb = b.status; break;
+      default:        va = a.rental.coDate; vb = b.rental.coDate;
+    }
+    return va < vb ? -1 * mult : va > vb ? 1 * mult : 0;
+  });
 
   document.getElementById('histCount').textContent = `${filt.length} record${filt.length!==1?'s':''}`;
 
   if (!filt.length) {
-    document.getElementById('histBody').innerHTML = `<div class="hist-none">No records found.</div>`;
+    document.getElementById('histBody').innerHTML = `<div class="hist-none">No records found.</div>`; // safe: static content
     return;
   }
 
-  const rows_html = filt.map(r => {
+  // Pagination — show first N pages worth
+  const visible = filt.slice(0, histPage * HISTORY_PAGE_SIZE);
+  const hasMore = filt.length > visible.length;
+
+  const sortIcon = (c) => histSort.col === c ? (histSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+
+  const rows_html = visible.map(r => {
     const itemCell = r.snaps.map(s =>
-      `<div><span class="mono-s">${escHtml(s.label)}</span>${s.note ? `<span style="font-size:10.5px;color:var(--s400);margin-left:5px;">${escHtml(s.note)}</span>` : ''}</div>`
+      `<div><span class="mono-s">${escHtml(s.label)}</span>${s.note ? `<span class="hist-note">${escHtml(s.note)}</span>` : ''}</div>`
     ).join('');
-    const coTimeStr = r.rental.coTime ? `<div class="mono-s" style="font-size:9px;color:var(--s400)">${fmtTime(r.rental.coTime)}</div>` : '';
-    const ciTimeStr = r.rental.ciTime ? `<div class="mono-s" style="font-size:9px;color:var(--s400)">${fmtTime(r.rental.ciTime)}</div>` : '';
+    const coTimeStr = r.rental.coTime ? `<div class="mono-s mono-sub">${fmtTime(r.rental.coTime)}</div>` : '';
+    const ciTimeStr = r.rental.ciTime ? `<div class="mono-s mono-sub">${fmtTime(r.rental.ciTime)}</div>` : '';
     return `
     <tr>
       <td>${itemCell}</td>
       <td>${escHtml(r.rental.event)}</td>
       <td>${escHtml(r.rental.org)}</td>
       <td><span class="mono-s">${fmtDate(r.rental.coDate)}</span>${coTimeStr}</td>
-      <td><span class="mono-s" ${r.st2==='ov'?'style="color:var(--ov)"':''}>${fmtDate(r.rental.retDate)}</span></td>
+      <td><span class="mono-s${r.st2==='ov'?' text-ov':''}">${fmtDate(r.rental.retDate)}</span></td>
       <td><span class="mono-s">${r.rental.actualDate?fmtDate(r.rental.actualDate):'—'}</span>${ciTimeStr}</td>
-      <td><span class="pill ${r.st2}" style="font-size:8px">${r.status}</span></td>
+      <td><span class="pill ${r.st2} pill-sm">${r.status}</span></td>
     </tr>`;
   }).join('');
+
+  const loadMoreBtn = hasMore
+    ? `<div class="hist-load-more"><button class="btn btn-ghost btn-sm" data-action="hist-load-more">Load more (${filt.length - visible.length} remaining)</button></div>`
+    : '';
 
   document.getElementById('histBody').innerHTML = `
     <table>
       <thead><tr>
-        <th>Item(s)</th><th>Event</th><th>Organization</th>
-        <th>Checked Out</th><th>Due</th><th>Returned</th><th>Status</th>
+        <th>Item(s)</th>
+        <th class="sortable" data-sort-col="event">Event${sortIcon('event')}</th>
+        <th class="sortable" data-sort-col="org">Organization${sortIcon('org')}</th>
+        <th class="sortable" data-sort-col="coDate">Checked Out${sortIcon('coDate')}</th>
+        <th class="sortable" data-sort-col="retDate">Due${sortIcon('retDate')}</th>
+        <th class="sortable" data-sort-col="actual">Returned${sortIcon('actual')}</th>
+        <th class="sortable" data-sort-col="status">Status${sortIcon('status')}</th>
       </tr></thead>
       <tbody>${rows_html}</tbody>
-    </table>`;
+    </table>
+    ${loadMoreBtn}`; // safe: all user data passed through escHtml
 }
 
 // ═══════════════════════════════════════════════════════
@@ -711,7 +855,7 @@ function bindUIEvents() {
   document.getElementById('importFile')?.addEventListener('change', (e) => importJSON(e.target));
   document.getElementById('btnExportHistory')?.addEventListener('click', exportHistoryCSV);
   document.getElementById('btnExportInventory')?.addEventListener('click', exportInventoryCSV);
-  document.getElementById('hsearch')?.addEventListener('input', renderHistory);
+  document.getElementById('hsearch')?.addEventListener('input', debounce(() => { histPage = 1; renderHistory(); }, SEARCH_DEBOUNCE_MS));
   document.getElementById('btnConfirmCheckout')?.addEventListener('click', confirmCheckout);
   document.getElementById('btnConfirmCheckin')?.addEventListener('click', confirmCheckin);
   document.getElementById('btnCalPrev')?.addEventListener('click', () => calNav(-1));
@@ -747,11 +891,15 @@ function bindUIEvents() {
     const rentalId = t.closest('[data-return-rental]')?.getAttribute('data-return-rental');
     if (rentalId) { returnAllForRental(rentalId); return; }
 
+    const sortCol = t.closest('[data-sort-col]')?.getAttribute('data-sort-col');
+    if (sortCol) { toggleHistSort(sortCol); return; }
+
     const action = t.closest('[data-action]')?.getAttribute('data-action');
     if (action === 'clear-selection') clearSelection();
     else if (action === 'open-checkout') openCheckout();
     else if (action === 'dismiss-backup-banner') dismissBanner();
     else if (action === 'export-backup') exportJSON();
+    else if (action === 'hist-load-more') { histPage++; renderHistory(); }
 
     const calBar = t.closest('[data-cal-rental]');
     if (calBar) calBarClick(calBar.getAttribute('data-cal-rental'), calBar.getAttribute('data-cal-item'));
@@ -773,12 +921,15 @@ function bindUIEvents() {
 }
 
 function tab(id, btn) {
-  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));
+  document.querySelectorAll('.tab').forEach(b => { b.classList.remove('on'); b.setAttribute('aria-selected', 'false'); });
   document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));
   btn.classList.add('on');
+  btn.setAttribute('aria-selected', 'true');
   document.getElementById('pane-'+id).classList.add('on');
-  if (id==='history') renderHistory();
-  if (id==='calendar') renderCalendar();
+  // Render the newly active tab's content
+  if (id === 'dashboard') { renderOverdue(); renderActionBar(); renderGrids(); }
+  else if (id === 'history') renderHistory();
+  else if (id === 'calendar') renderCalendar();
 }
 
 function setFil(type, btn) {
@@ -941,7 +1092,7 @@ function sanitizeBackupData(raw) {
   if (!Array.isArray(raw.equipment) || !Array.isArray(raw.rentals) || typeof raw.seq !== 'object' || raw.seq === null) {
     throw new Error('Backup payload missing required collections');
   }
-  if (raw.equipment.length > 1000 || raw.rentals.length > 10000) throw new Error('Backup payload too large');
+  if (raw.equipment.length > MAX_EQUIPMENT_IMPORT || raw.rentals.length > MAX_RENTALS_IMPORT) throw new Error('Backup payload too large');
 
   const seq = {
     reader: Math.max(1, Number.parseInt(raw.seq.reader, 10) || 1),
@@ -989,11 +1140,11 @@ function sanitizeBackupData(raw) {
     const items = Array.isArray(r.items)
       ? [...new Set(r.items.map(String).filter(id => equipmentIdSet.has(id)))]
       : [];
-    if (items.length > 100) throw new Error(`Invalid rental item count at index ${idx}`);
+    if (items.length > MAX_ITEMS_PER_RENTAL) throw new Error(`Invalid rental item count at index ${idx}`);
     const snapshots = Array.isArray(r.snapshots)
       ? r.snapshots
-          .slice(0, 100)
-          .map(s => ({ id: String(s?.id ?? ''), label: cleanText(s?.label, 40), note: cleanText(s?.note, MAX_NOTE_LEN) }))
+          .slice(0, MAX_ITEMS_PER_RENTAL)
+          .map(s => ({ id: String(s?.id ?? ''), label: cleanText(s?.label, MAX_SNAP_LABEL_LEN), note: cleanText(s?.note, MAX_NOTE_LEN) }))
       : [];
     return {
       id: String(r.id || uid()),
@@ -1031,7 +1182,7 @@ function sanitizeBackupData(raw) {
 function importJSON(input) {
   const file = input.files[0];
   if (!file) return;
-  if (file.size > 10 * 1024 * 1024) {
+  if (file.size > MAX_BACKUP_FILE_BYTES) {
     toast('Backup file is too large (10MB max).', 'err');
     input.value = '';
     return;
@@ -1113,34 +1264,23 @@ function renderSbLastBackup() {
 //  CALENDAR
 // ═══════════════════════════════════════════════════════
 
-// Event color palette — auto-assigned per unique event name
-const EVENT_COLORS = [
-  { bg:'#E3F2FD', fg:'#1565C0', bar:'#42A5F5' },
-  { bg:'#F3E5F5', fg:'#7B1FA2', bar:'#AB47BC' },
-  { bg:'#E8F5E9', fg:'#2E7D32', bar:'#66BB6A' },
-  { bg:'#FFF3E0', fg:'#E65100', bar:'#FFA726' },
-  { bg:'#FCE4EC', fg:'#C62828', bar:'#EF5350' },
-  { bg:'#E0F7FA', fg:'#00695C', bar:'#26A69A' },
-  { bg:'#FFF9C4', fg:'#F57F17', bar:'#FFEE58' },
-  { bg:'#E8EAF6', fg:'#283593', bar:'#5C6BC0' },
-  { bg:'#EFEBE9', fg:'#4E342E', bar:'#8D6E63' },
-  { bg:'#F1F8E9', fg:'#558B2F', bar:'#9CCC65' },
-];
-const eventColorMap = new Map();
+// Event color palette — 10 CSS classes (ev-0 through ev-9) defined in styles.css
+const EVENT_COLOR_COUNT = 10;
+const eventColorMap = new Map(); // event name → index (0-9)
 
-function getEventColor(eventName) {
+/** Get the CSS class index for an event name (auto-assigned, stable across renders). */
+function getEventColorIdx(eventName) {
   if (eventColorMap.has(eventName)) return eventColorMap.get(eventName);
-  const idx = eventColorMap.size % EVENT_COLORS.length;
-  const c = EVENT_COLORS[idx];
-  eventColorMap.set(eventName, c);
-  return c;
+  const idx = eventColorMap.size % EVENT_COLOR_COUNT;
+  eventColorMap.set(eventName, idx);
+  return idx;
 }
 
-// Rebuild color map from current rentals (preserves assignment across renders)
+/** Rebuild color map from current rentals (preserves assignment across renders). */
 function rebuildEventColors() {
   const seen = new Set(eventColorMap.keys());
   S.rentals.forEach(r => {
-    if (!seen.has(r.event)) getEventColor(r.event);
+    if (!seen.has(r.event)) getEventColorIdx(r.event);
   });
 }
 
@@ -1187,23 +1327,28 @@ function renderCalMonth() {
     // Find rentals active on this day
     const active = rentals.filter(r => r.start <= dateStr && r.end >= dateStr);
     active.forEach(r => visibleEvents.add(r.rental.event));
-    const pills = active.slice(0, 3).map(r => {
-      const c = getEventColor(r.rental.event);
+    const pills = active.slice(0, MAX_MONTH_PILLS).map(r => {
+      const ci = getEventColorIdx(r.rental.event);
       const overdueClass = r.isOverdueRental ? ' cal-pill-ov' : '';
       const closedClass = !r.isActive ? ' cal-pill-closed' : '';
-      return `<div class="cal-pill${overdueClass}${closedClass}" style="background:${c.bar};color:#fff" title="${escHtml(r.rental.event)}: ${r.snaps.map(s=>s.label).join(', ')}">${escHtml(r.rental.event).slice(0, 12)}</div>`;
+      return `<div class="cal-pill ev-bar-${ci}${overdueClass}${closedClass}" title="${escHtml(r.rental.event)}: ${r.snaps.map(s=>s.label).join(', ')}">${escHtml(r.rental.event).slice(0, 12)}</div>`;
     }).join('');
-    const more = active.length > 3 ? `<div class="cal-more">+${active.length - 3} more</div>` : '';
+    const more = active.length > MAX_MONTH_PILLS ? `<div class="cal-more">+${active.length - MAX_MONTH_PILLS} more</div>` : '';
 
     // Position day 1 on the correct column (skip leading empties)
-    const colStart = d === 1 && firstDay > 0 ? ` style="grid-column-start:${firstDay + 1}"` : '';
-    html += `<div class="cal-day${isToday ? ' cal-today' : ''}"${colStart}>
+    const colAttr = d === 1 && firstDay > 0 ? ` data-col-start="${firstDay + 1}"` : '';
+    html += `<div class="cal-day${isToday ? ' cal-today' : ''}"${colAttr}>
       <div class="cal-day-num">${d}</div>
       ${pills}${more}
     </div>`;
   }
   html += '</div>';
-  document.getElementById('calBody').innerHTML = html;
+  const calBody = document.getElementById('calBody');
+  calBody.innerHTML = html; // safe: dates are numeric, event names escaped via escHtml
+  // Apply dynamic grid-column-start via CSSOM (avoids inline style for CSP compliance)
+  calBody.querySelectorAll('[data-col-start]').forEach(el => {
+    el.style.gridColumnStart = el.dataset.colStart;
+  });
   renderCalLegend(visibleEvents);
 }
 
@@ -1249,7 +1394,7 @@ function ganttHeader(range) {
   return html;
 }
 
-function ganttBar(rental, range, rowHeight) {
+function ganttBar(rental, range) {
   const startStr = dateToStr(range.start);
   const endStr = dateToStr(range.end);
   const rStart = rental.start < startStr ? startStr : rental.start;
@@ -1259,13 +1404,13 @@ function ganttBar(rental, range, rowHeight) {
 
   const left = daysBetween(startStr, rStart);
   const width = daysBetween(rStart, rEnd) + 1;
-  const c = getEventColor(rental.rental.event);
-  const overdueStyle = rental.isOverdueRental ? 'background-image:repeating-linear-gradient(-45deg,transparent,transparent 3px,rgba(153,0,0,.2) 3px,rgba(153,0,0,.2) 6px);' : '';
-  const closedOpacity = !rental.isActive ? 'opacity:.45;' : '';
+  const ci = getEventColorIdx(rental.rental.event);
+  const overdueClass = rental.isOverdueRental ? ' gantt-bar-ov' : '';
+  const closedClass = !rental.isActive ? ' gantt-bar-closed' : '';
   const pct = (n) => (n / range.days * 100).toFixed(2);
   const itemId = rental.items[0]?.id || '';
 
-  return `<div class="gantt-bar" style="left:${pct(left)}%;width:${pct(width)}%;background:${c.bar};${overdueStyle}${closedOpacity}" title="${escHtml(rental.rental.event)}: ${rental.snaps.map(s=>s.label).join(', ')} (${rental.start} → ${rental.end})" data-cal-rental="${escHtml(rental.rental.id)}" data-cal-item="${escHtml(itemId)}">${escHtml(rental.rental.event).slice(0, 18)}</div>`;
+  return `<div class="gantt-bar ev-bar-${ci}${overdueClass}${closedClass}" data-gantt-left="${pct(left)}" data-gantt-width="${pct(width)}" title="${escHtml(rental.rental.event)}: ${rental.snaps.map(s=>s.label).join(', ')} (${rental.start} → ${rental.end})" data-cal-rental="${escHtml(rental.rental.id)}" data-cal-item="${escHtml(itemId)}">${escHtml(rental.rental.event).slice(0, 18)}</div>`;
 }
 
 // Today line for gantt views
@@ -1276,7 +1421,17 @@ function ganttTodayLine(range) {
   if (todayStr < startStr || todayStr > endStr) return '';
   const offset = daysBetween(startStr, todayStr);
   const pct = ((offset + 0.5) / range.days * 100).toFixed(2);
-  return `<div class="gantt-today-line" style="left:${pct}%"></div>`;
+  return `<div class="gantt-today-line" data-gantt-left="${pct}"></div>`;
+}
+
+/** Apply dynamic left/width positioning to Gantt bars and today lines via CSSOM (CSP-safe). */
+function applyGanttPositions(container) {
+  container.querySelectorAll('[data-gantt-left]').forEach(el => {
+    el.style.left = el.dataset.ganttLeft + '%';
+  });
+  container.querySelectorAll('[data-gantt-width]').forEach(el => {
+    el.style.width = el.dataset.ganttWidth + '%';
+  });
 }
 
 // ── Timeline View (by device) ──────────────────
@@ -1333,7 +1488,9 @@ function renderCalTimeline() {
   });
 
   html += '</div>';
-  document.getElementById('calBody').innerHTML = html;
+  const calEl = document.getElementById('calBody');
+  calEl.innerHTML = html; // safe: labels escaped via escHtml, positions are numeric
+  applyGanttPositions(calEl);
   renderCalLegend(visibleEvents);
 }
 
@@ -1368,10 +1525,10 @@ function renderCalEvent() {
   html += ganttHeader(range);
 
   for (const [event, eventRentals] of eventMap) {
-    const c = getEventColor(event);
+    const ci = getEventColorIdx(event);
     // Show each rental as a separate row under the event header
     html += `<div class="gantt-event-group">
-      <div class="gantt-event-hd" style="border-left:3px solid ${c.bar}">
+      <div class="gantt-event-hd ev-border-${ci}">
         <div class="gantt-event-name">${escHtml(event)}</div>
         <div class="gantt-event-count">${eventRentals.reduce((n, r) => n + r.snaps.length, 0)} items</div>
       </div>`;
@@ -1380,7 +1537,7 @@ function renderCalEvent() {
       const itemLabels = r.snaps.map(s => s.label).join(', ');
       html += `<div class="gantt-row gantt-row-sm">
         <div class="gantt-label-col">
-          <div class="gantt-device-lbl" style="font-size:10px">${escHtml(itemLabels)}</div>
+          <div class="gantt-device-lbl gantt-device-lbl-sm">${escHtml(itemLabels)}</div>
         </div>
         <div class="gantt-track">
           ${ganttTodayLine(range)}
@@ -1393,7 +1550,9 @@ function renderCalEvent() {
   }
 
   html += '</div>';
-  document.getElementById('calBody').innerHTML = html;
+  const calEl2 = document.getElementById('calBody');
+  calEl2.innerHTML = html; // safe: labels escaped via escHtml, positions are numeric
+  applyGanttPositions(calEl2);
   renderCalLegend(visibleEvents);
 }
 
@@ -1438,8 +1597,8 @@ function renderCalLegend(visibleEvents) {
   if (!visibleEvents || !visibleEvents.size) { el.innerHTML = ''; return; }
 
   const chips = [...visibleEvents].map(name => {
-    const c = getEventColor(name);
-    return `<span class="cal-legend-chip" style="background:${c.bg};color:${c.fg};border-color:${c.bar}">${escHtml(name)}</span>`;
+    const ci = getEventColorIdx(name);
+    return `<span class="cal-legend-chip ev-legend-${ci}">${escHtml(name)}</span>`;
   }).join('');
   el.innerHTML = chips;
 }
@@ -1452,7 +1611,7 @@ function renderCalendar() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  INIT
+//  INIT  —  Codex v1.2.0
 // ═══════════════════════════════════════════════════════
 
 bindUIEvents();
@@ -1460,4 +1619,9 @@ render();
 renderBackupBanner();
 renderSbLastBackup();
 checkStorageHealth();
+
+// Refresh header date when the user returns to the tab (no setInterval needed)
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) renderHeader();
+});
 setInterval(renderHeader, 60000); // refresh clock label
