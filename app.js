@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════
-//  PennCard Equipment Checkout v1.2.0
+//  PennCard Equipment Checkout v1.2.1
 //  @author  Codex
 //  @license Internal — University of Pennsylvania PennCard Center
 //
@@ -1611,7 +1611,7 @@ function renderCalendar() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  INIT  —  Codex v1.2.0
+//  INIT  —  Codex v1.2.1
 // ═══════════════════════════════════════════════════════
 
 bindUIEvents();
